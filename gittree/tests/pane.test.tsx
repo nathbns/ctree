@@ -1,0 +1,347 @@
+import type { Args, On } from 'claude-code'
+import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
+
+import { isReadOnly, READ_FLAGS } from '../src/git-commands'
+import { type Answer, demoGit, h, logOf, type Script } from './fixtures'
+
+/** The pane docked beside a fullscreen transcript: 88 columns, 16 rows. */
+const PANE = {
+  plugin: 'gittree',
+  component: 'Pane',
+  requestId: 'gittree',
+  props: {
+    title: 'Git',
+    isFocused: true,
+    bodyColumns: 89,
+    placement: 'dock',
+    scroll: { offset: 0, bodyRows: 16 },
+    view: {},
+  },
+} as const
+
+const OPEN = {
+  command: 'gittree',
+  args: '',
+  origin: { kind: 'composer' },
+  presentation: { isFullscreen: true, columns: 200 },
+} as const
+
+/**
+ * A session in /work/demo whose git answers from `script`, then the demo.
+ * Keeps every git run (its arguments after the read flags), what was put in
+ * the prompt, and the panes opened.
+ */
+function world(on: On, script: Script = () => undefined) {
+  const runs: string[][] = []
+  const filled: string[] = []
+  const opened: Args<'ui.open'>[] = []
+  const focused: string[] = []
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 26, 12) })
+
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/work/demo' }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('ui.open', ($, e) => {
+    opened.push(e)
+
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', () => ({ value: undefined }))
+  on('ui.focus', ($, e) => {
+    focused.push(e.element ?? '')
+
+    return {}
+  })
+  on('prompt.read', () => ({ value: { text: '', cursor: 0 } }))
+  on('prompt.fill', ($, e) => {
+    filled.push(e.text)
+
+    return { isFilled: true }
+  })
+  on('process.run', ($, e) => {
+    const [git, ...flagsAndArgs] = e.argv
+    const args = flagsAndArgs.slice(READ_FLAGS.length)
+
+    expect(git).toBe('git')
+    expect(flagsAndArgs.slice(0, READ_FLAGS.length)).toEqual([...READ_FLAGS])
+    expect(`${args.join(' ')} → ${isReadOnly(args)}`).toBe(`${args.join(' ')} → true`)
+    runs.push(args)
+
+    const answer = script(args) ?? demoGit(args)
+
+    return { value: { stderr: '', ...answer, isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+
+  return { runs, filled, opened, focused, clock }
+}
+
+async function openPane($: Engine, w: ReturnType<typeof world>) {
+  await $.session.start({ cwd: '/work/demo', surface: 'terminal', isInteractive: true })
+  await $.command.run(OPEN)
+  await w.clock.settle()
+}
+
+const rowTexts = async (ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text: string }[]> }) =>
+  (await ui.findAll({ type: 'Button' })).filter(button => !button.key?.startsWith('key-')).map(button => button.text)
+
+describe('the pane', () => {
+  test('/gittree opens a focused pane that closes on Escape', async ($, on) => {
+    const w = world(on)
+
+    await openPane($, w)
+
+    expect(w.opened[0]).toMatchObject({ id: 'gittree', focus: true, closeOnEscape: true })
+  })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`the graph, its labels and the pinned uncommitted row, on ${surface}`, async ($, on) => {
+      const w = world(on)
+
+      await openPane($, w)
+
+      const ui = await $.ui.mount({ ...PANE, surface })
+      const rows = await rowTexts(ui)
+
+      expect(rows[0]).toContain('◌')
+      expect(rows[0]).toContain('Modifications non commitées (2)')
+      expect(rows.find(row => row.includes('Merge branch'))).toContain('◉─┼─╮')
+      expect(rows.find(row => row.includes('Merge branch'))).toContain('main ⇄ origin')
+      expect(rows.find(row => row.includes('Parsing de git log'))).toContain('◇ v0.1.0')
+      expect((await ui.find({ type: 'Text', text: /demo · ⎇ main/ }))?.text).toContain('✓ origin/main')
+      await ui.unmount()
+    })
+  }
+
+  test('Enter on a commit unfolds its files, Enter on a file shows its diff, q goes back', async ($, on) => {
+    const w = world(on)
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    await ui.press({ key: `c:${h('3')}` })
+    await w.clock.settle()
+
+    const file = await ui.find({ key: `f:${h('3')}:0` })
+
+    expect(file?.text).toContain('A lanes.txt')
+    expect(file?.text).toContain('+2')
+    expect(w.runs.some(args => args[0] === 'diff-tree' && args.includes(h('6')) && args.includes(h('3')))).toBe(true)
+
+    await ui.press({ key: `f:${h('3')}:0` })
+    await w.clock.settle()
+
+    const code = await ui.find({ type: 'Code' })
+
+    expect(code?.props).toMatchObject({ format: 'diff', source: expect.stringContaining('@@ -0,0 +1,2 @@') })
+
+    await ui.press({ key: 'key-q' })
+
+    expect(await ui.find({ type: 'Code' })).toBeUndefined()
+    expect(await ui.find({ key: `f:${h('3')}:0` })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('j and k move the selection', async ($, on) => {
+    const w = world(on)
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const selected = async () => (await rowTexts(ui)).find(row => row.startsWith('❯'))
+
+    // HEAD's commit is selected first.
+    expect(await selected()).toContain('Merge branch')
+
+    await ui.press({ key: 'key-j' })
+    expect(await selected()).toContain('Calcul des lanes')
+
+    await ui.press({ key: 'key-k' })
+    await ui.press({ key: 'key-k' })
+    expect(await selected()).toContain('Navigation j/k')
+    await ui.unmount()
+  })
+
+  test('e puts a question about the selected commit in the prompt, without sending it', async ($, on) => {
+    const w = world(on)
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    await ui.press({ key: 'key-e' })
+
+    expect(w.filled).toHaveLength(1)
+    expect(w.filled[0]).toContain('3333333')
+    expect(w.filled[0]).toContain("Merge branch 'feature/lanes'")
+    expect(await ui.find({ type: 'Text', text: /Question prête/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a git command Claude runs reloads the graph; an edit reloads only the status', async ($, on) => {
+    const w = world(on)
+
+    on('tool.call', () => ({ result: {} }))
+    await openPane($, w)
+
+    const logs = () => w.runs.filter(args => args[0] === 'log').length
+    const statuses = () => w.runs.filter(args => args[0] === 'status').length
+    const before = { logs: logs(), statuses: statuses() }
+
+    await $.tool.call({ tool: 'Bash', command: 'git commit -m "x"' })
+    await w.clock.advance(1000)
+
+    expect(logs()).toBe(before.logs + 1)
+
+    await $.tool.call({ tool: 'Edit', file_path: '/work/demo/a.txt', old_string: 'a', new_string: 'b' })
+    await w.clock.advance(1000)
+
+    expect(logs()).toBe(before.logs + 1)
+    expect(statuses()).toBe(before.statuses + 2)
+  })
+
+  test('a burst of git commands reloads once', async ($, on) => {
+    const w = world(on)
+
+    on('tool.call', () => ({ result: {} }))
+    await openPane($, w)
+
+    const logs = () => w.runs.filter(args => args[0] === 'log').length
+    const before = logs()
+
+    await $.tool.call({ tool: 'Bash', command: 'git add -A' })
+    await $.tool.call({ tool: 'Bash', command: 'git commit -m one' })
+    await $.tool.call({ tool: 'Bash', command: 'git tag v1' })
+    await w.clock.advance(1000)
+
+    expect(logs()).toBe(before + 1)
+  })
+
+  test('r reloads on demand', async ($, on) => {
+    const w = world(on)
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const before = w.runs.filter(args => args[0] === 'log').length
+
+    await ui.press({ key: 'key-r' })
+
+    expect(w.runs.filter(args => args[0] === 'log').length).toBe(before + 1)
+    await ui.unmount()
+  })
+})
+
+describe('the edge cases', () => {
+  test('outside a repository the pane says so', async ($, on) => {
+    const w = world(on, args =>
+      args[0] === 'rev-parse' || args[0] === 'for-each-ref'
+        ? { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository (or any of the parent directories): .git' }
+        : undefined,
+    )
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    expect(await ui.find({ type: 'Text', text: /Pas de dépôt git ici/ })).toBeDefined()
+    expect(w.runs.some(args => args[0] === 'log')).toBe(false)
+    await ui.unmount()
+  })
+
+  test('an empty repository shows its branch, no commit, and the files waiting', async ($, on) => {
+    const w = world(on, args => {
+      if (args[0] === 'rev-parse' && args.includes('--verify')) return { exitCode: 1, stdout: '' }
+      if (args[0] === 'for-each-ref') return { exitCode: 0, stdout: '' }
+      if (args[0] === 'status') return { exitCode: 0, stdout: '?? README.md\0' }
+
+      return undefined
+    })
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    expect((await ui.find({ type: 'Text', text: /demo · ⎇ main/ }))?.text).toContain('aucun commit')
+    expect(await ui.find({ type: 'Text', text: /Aucun commit pour l’instant/ })).toBeDefined()
+    expect((await rowTexts(ui))[0]).toContain('Modifications non commitées (1)')
+    expect(w.runs.some(args => args[0] === 'log')).toBe(false)
+    await ui.unmount()
+  })
+
+  test('a detached HEAD is labelled on its commit and in the header', async ($, on) => {
+    const w = world(on, args => (args[0] === 'symbolic-ref' ? { exitCode: 1, stdout: '' } : undefined))
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    expect((await ui.find({ type: 'Text', text: /HEAD détachée @ 3333333/ }))).toBeDefined()
+    expect((await rowTexts(ui)).find(row => row.includes('Merge branch'))).toContain('HEAD détachée')
+    await ui.unmount()
+  })
+
+  test('a linked worktree says so in the header', async ($, on) => {
+    const w = world(on, args =>
+      args[0] === 'rev-parse' && args.includes('--show-toplevel')
+        ? { exitCode: 0, stdout: '/work/demo-wt\n/work/demo/.git/worktrees/demo-wt\n/work/demo/.git\n' }
+        : undefined,
+    )
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    expect((await ui.find({ type: 'Text', text: /demo-wt · ⎇ main/ }))?.text).toContain('worktree secondaire')
+    await ui.unmount()
+  })
+
+  test('a long history loads 100 commits, then the next page when the selection nears the end', async ($, on) => {
+    const many = Array.from({ length: 250 }, (_, i) => ({
+      hash: i.toString(16).padStart(40, '0'),
+      parents: i < 249 ? [(i + 1).toString(16).padStart(40, '0')] : [],
+      author: 'A',
+      email: 'a@e.st',
+      time: 1_790_000_000 - i * 60,
+      subject: `commit ${i}`,
+    }))
+    const w = world(on, args => {
+      if (args[0] === 'status') return { exitCode: 0, stdout: '' }
+      if (args[0] === 'rev-parse' && args.includes('--verify')) return { exitCode: 0, stdout: `${many[0]?.hash}\n` }
+      if (args[0] === 'for-each-ref') return { exitCode: 0, stdout: `refs/heads/main\x1f${many[0]?.hash}\x1f\x1f\x1f\x1f\n` }
+      if (args[0] !== 'log') return undefined
+
+      const line = args.join(' ')
+      const skip = Number(/--skip=(\d+)/.exec(line)?.[1] ?? 0)
+      const count = Number(/ -n(\d+)/.exec(line)?.[1] ?? 1000)
+
+      return { exitCode: 0, stdout: logOf(many.slice(skip, skip + count)) }
+    })
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const logs = () => w.runs.filter(args => args[0] === 'log')
+
+    expect(logs()).toHaveLength(1)
+    expect(logs()[0]).toContain('-n101')
+
+    for (let i = 0; i < 90; i += 1) {
+      await ui.press({ key: 'key-j' })
+    }
+
+    await w.clock.settle()
+
+    expect(logs()).toHaveLength(2)
+    expect(logs()[1]).toContain('--skip=100')
+    expect(await ui.find({ key: `c:${many[150]?.hash}` })).toBeUndefined()
+
+    for (let i = 0; i < 70; i += 1) {
+      await ui.press({ key: 'key-j' })
+    }
+
+    expect((await rowTexts(ui)).find(row => row.startsWith('❯'))).toContain('commit 160')
+    await ui.unmount()
+  })
+})

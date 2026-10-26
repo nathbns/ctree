@@ -1,0 +1,9 @@
+{
+  "name": "gittree",
+  "version": "0.1.0",
+  "description": "Graphe git du dépôt dans un panneau à côté de la conversation, en lecture seule, qui suit les commandes git de Claude",
+  "author": {
+    "name": "nathbns"
+  },
+  "types": "./types/index.d.ts"
+}
