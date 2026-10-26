@@ -18,7 +18,9 @@ j: ↓  k: ↑  ⏎ déplier  e: expliquer  r: rafraîchir  q: fermer
 ## Essayer
 
 ```sh
-claude --plugin-dir ./gittree
+git clone git@github.com:nathbns/ctree.git ~/ctree
+cd ton-projet
+claude --plugin-dir ~/ctree
 ```
 
 Puis `/gittree` au prompt. En mode plein écran (terminal d'au moins 110 colonnes), le panneau s'ancre à côté de la conversation. Sinon, il s'ouvre au-dessus du prompt.
@@ -75,9 +77,11 @@ tests/    lanes, parsing, étiquettes et couleurs, lignes, contrôleur, panneau 
 
 ## Développer
 
+Depuis le dossier du dépôt :
+
 ```sh
-claude plugin test ./gittree       # 64 tests
-claude plugin validate ./gittree
-npx -p typescript tsc -p ./gittree # après un premier lancement avec --plugin-dir,
-                                   # qui dépose les types dans .claude-plugin/types/
+claude plugin test .         # 64 tests
+claude plugin validate .
+npx -p typescript tsc -p .   # après un premier lancement avec --plugin-dir,
+                             # qui dépose les types dans .claude-plugin/types/
 ```
