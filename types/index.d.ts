@@ -1,10 +1,10 @@
 /** The commits the refs pointed at when the session started. */
-export type GittreeBaseline = string[]
+export type CtreeBaseline = string[]
 
 declare module 'claude-code' {
   interface PluginState {
-    gittree: {
-      baseline: GittreeBaseline | null
+    ctree: {
+      baseline: CtreeBaseline | null
     }
   }
 }

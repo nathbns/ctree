@@ -14,7 +14,9 @@ import {
   parseStatus,
   parseWorktrees,
 } from './git-parse'
-import type { Commit, FileChange, GitRunner, RepoSnapshot, Snapshot, StatusEntry } from './types'
+import type { Commit, FileChange, GitRunner, LogScope, RepoSnapshot, Snapshot, StatusEntry } from './types'
+
+const ALL: LogScope = { kind: 'all' }
 
 /**
  * The repository at `cwd`: HEAD, refs, the first `count` commits, the
@@ -24,8 +26,10 @@ import type { Commit, FileChange, GitRunner, RepoSnapshot, Snapshot, StatusEntry
 export async function loadSnapshot(
   git: GitRunner,
   cwd: string,
-  options: { count: number; baseline: readonly string[] | null },
+  options: { count: number; baseline: readonly string[] | null; scope?: LogScope },
 ): Promise<Snapshot> {
+  const scope = options.scope ?? ALL
+
   try {
     const info = await git(Cmd.repoInfo(), { cwd })
 
@@ -56,7 +60,7 @@ export async function loadSnapshot(
     const refList = refs.code === 0 ? parseRefs(refs.stdout) : []
     const hasHistory = head.hash !== null || refList.length > 0
     const page = hasHistory
-      ? await loadCommits(git, repo.toplevel, { skip: 0, count: options.count, withHead: head.hash !== null })
+      ? await loadCommits(git, repo.toplevel, { skip: 0, count: options.count, withHead: head.hash !== null, scope })
       : { commits: [], hasMore: false }
     const sessionCommits =
       options.baseline !== null && hasHistory
@@ -74,6 +78,7 @@ export async function loadSnapshot(
       refs: refList,
       commits: page.commits,
       hasMore: page.hasMore,
+      scope,
       status: status.code === 0 ? parseStatus(status.stdout) : [],
       worktrees: trees.code === 0 ? parseWorktrees(trees.stdout) : [],
       sessionCommits,
@@ -87,7 +92,7 @@ export async function loadSnapshot(
 export async function loadCommits(
   git: GitRunner,
   toplevel: string,
-  options: { skip: number; count: number; withHead: boolean },
+  options: { skip: number; count: number; withHead: boolean; scope: LogScope },
 ): Promise<{ commits: Commit[]; hasMore: boolean }> {
   const result = await git(Cmd.log(options), { cwd: toplevel })
 
@@ -95,7 +100,13 @@ export async function loadCommits(
     throw new Error(firstLine(result.stderr) || 'git log a échoué')
   }
 
-  const commits = parseLog(result.stdout)
+  const parsed = parseLog(result.stdout)
+  // A first-parent log leaves the merged lines out: so do their parents here,
+  // or each merge would open a lane to a commit that never comes.
+  const commits =
+    options.scope.kind === 'focus' && options.scope.isFirstParent
+      ? parsed.map(commit => (commit.parents.length > 1 ? { ...commit, parents: commit.parents.slice(0, 1), isMerge: true as const } : commit))
+      : parsed
 
   return { commits: commits.slice(0, options.count), hasMore: commits.length > options.count }
 }
@@ -106,6 +117,7 @@ export async function loadMore(git: GitRunner, snapshot: RepoSnapshot): Promise<
     skip: snapshot.commits.length,
     count: Cmd.PAGE_SIZE,
     withHead: snapshot.head.hash !== null,
+    scope: snapshot.scope,
   })
   const known = new Set(snapshot.commits.map(commit => commit.hash))
 

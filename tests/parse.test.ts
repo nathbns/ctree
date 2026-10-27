@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { isReadOnly } from '../src/git-commands'
 import * as Cmd from '../src/git-commands'
+import { loadCommits } from '../src/repo'
 import {
   hunksOf,
   joinChanges,
@@ -120,7 +121,8 @@ describe('the commands are reads', () => {
       Cmd.refs(),
       Cmd.status(),
       Cmd.worktrees(),
-      Cmd.log({ skip: 0, count: 100, withHead: true }),
+      Cmd.log({ skip: 0, count: 100, withHead: true, scope: { kind: 'all' } }),
+      Cmd.log({ skip: 100, count: 100, withHead: true, scope: { kind: 'focus', ref: 'refs/heads/main', label: 'main', isFirstParent: true } }),
       Cmd.sessionCommits({ withHead: true, email: 'a+b@c.d' }),
       Cmd.commitNumstat(A, B),
       Cmd.commitNumstat(A, undefined),
@@ -164,5 +166,20 @@ describe('the commands are reads', () => {
     expect(Cmd.sessionCommits({ withHead: false, email: 'a.b+c@d.e' })).toEqual([
       'rev-list', '--max-count=1000', '--committer=<a\\.b\\+c@d\\.e>', '--branches', '--stdin',
     ])
+  })
+})
+
+describe('a first-parent log', () => {
+  test('keeps each merge on its line, its merged parents dropped, still a merge', async () => {
+    const out = `${A}\x1f${B} ${C}\x1fX\x1fx@e.st\x1f1\x1fMerge topic\0${B}\x1f\x1fX\x1fx@e.st\x1f0\x1froot\0`
+    const page = await loadCommits(async () => ({ code: 0, stdout: out, stderr: '' }), '/r', {
+      skip: 0,
+      count: 100,
+      withHead: true,
+      scope: { kind: 'focus', ref: 'refs/heads/main', label: 'main', isFirstParent: true },
+    })
+
+    expect(page.commits[0]).toMatchObject({ hash: A, parents: [B], isMerge: true })
+    expect(page.commits[1]?.isMerge).toBeUndefined()
   })
 })

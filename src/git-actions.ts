@@ -64,7 +64,7 @@ export function switchAction(snapshot: RepoSnapshot, target: SwitchTarget): Acti
         details: kept,
         confirm: 'basculer',
         success: `✓ Sur ${target.branch}`,
-        note: `[gittree] Via le panneau, la personne est passée sur la branche ${target.branch} (git switch ${target.branch}).`,
+        note: `[ctree] Via le panneau, la personne est passée sur la branche ${target.branch} (git switch ${target.branch}).`,
       }
     case 'track': {
       const branch = branchOf(target.remote)
@@ -76,7 +76,7 @@ export function switchAction(snapshot: RepoSnapshot, target: SwitchTarget): Acti
         details: [`nouvelle branche locale ${branch}, qui suit ${target.remote}`, ...kept],
         confirm: 'créer et basculer',
         success: `✓ Sur ${branch} (suit ${target.remote})`,
-        note: `[gittree] Via le panneau, la personne a créé la branche ${branch} depuis ${target.remote} et est passée dessus (git switch --track ${target.remote}).`,
+        note: `[ctree] Via le panneau, la personne a créé la branche ${branch} depuis ${target.remote} et est passée dessus (git switch --track ${target.remote}).`,
       }
     }
     case 'detach': {
@@ -89,7 +89,7 @@ export function switchAction(snapshot: RepoSnapshot, target: SwitchTarget): Acti
         details: ['HEAD détachée : un commit fait ici n’appartiendra à aucune branche.', ...kept],
         confirm: 'détacher',
         success: `✓ HEAD détachée sur ${short}`,
-        note: `[gittree] Via le panneau, la personne a détaché HEAD sur ${short} (git switch --detach ${short}).`,
+        note: `[ctree] Via le panneau, la personne a détaché HEAD sur ${short} (git switch --detach ${short}).`,
       }
     }
   }
@@ -134,7 +134,7 @@ export function tagAction(commit: Commit, name: string, message: string): Action
     details: [`« ${commit.subject} »`, 'tag annoté : il partira avec le prochain push'],
     confirm: 'créer',
     success: `✓ Tag ${name} créé sur ${short}`,
-    note: `[gittree] Via le panneau, la personne a créé le tag annoté ${name} sur ${short} « ${commit.subject} ».`,
+    note: `[ctree] Via le panneau, la personne a créé le tag annoté ${name} sur ${short} « ${commit.subject} ».`,
   }
 }
 
@@ -223,7 +223,7 @@ export async function planPush(
       ],
       confirm: 'pousser',
       success: `✓ Poussé : ${head.branch} → ${remote}/${remoteBranch}`,
-      note: `[gittree] Via le panneau, la personne a poussé ${head.branch} vers ${remote}/${remoteBranch} (${count}${tags.length ? `, tags ${tags.join(', ')}` : ''}).`,
+      note: `[ctree] Via le panneau, la personne a poussé ${head.branch} vers ${remote}/${remoteBranch} (${count}${tags.length ? `, tags ${tags.join(', ')}` : ''}).`,
     },
   }
 }

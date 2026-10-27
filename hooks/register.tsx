@@ -1,5 +1,5 @@
-// gittree: the repository's commit graph in a pane beside the conversation.
-// /gittree opens it; it follows the git commands Claude runs. It reads git,
+// ctree: the repository's commit graph in a pane beside the conversation.
+// /ctree opens it; it follows the git commands Claude runs. It reads git,
 // and writes only the three changes the person confirms (branch, tag, push).
 
 import type { EngineInterface, Register } from 'claude-code'
@@ -10,17 +10,25 @@ import type { GitOptions } from '../src/types'
 import { createController, type Controller, type Host } from './controller'
 import { paneTree } from './view'
 
-const PANE_ID = 'gittree'
-const BASELINE = { plugin: 'gittree', key: 'baseline' } as const
+const PANE_ID = 'ctree'
+const BASELINE = { plugin: 'ctree', key: 'baseline' } as const
 const GIT_TIMEOUT_MS = 20_000
+
+/** A docked pane is at most this share of the terminal's width; ctree asks for all of it. */
+const DOCK_SHARE = 0.45
+/** Above the prompt (no fullscreen), as tall as the layout can spare. */
+const INLINE_ROWS = 60
+
+/** The width asked for, from the terminal's width the last /ctree saw. */
+const wanted = { columns: 120 }
 
 const paneArgs = (focus: boolean) => ({
   id: PANE_ID,
-  title: 'Git',
+  title: 'ctree',
   ...(focus ? { focus: true as const } : {}),
   closeOnEscape: true as const,
-  columns: 96,
-  rows: 22,
+  columns: wanted.columns,
+  rows: INLINE_ROWS,
 })
 
 function hostOf($: EngineInterface): Host {
@@ -40,14 +48,14 @@ function hostOf($: EngineInterface): Host {
   return {
     git: async (args, options) => {
       if (!isReadOnly(args)) {
-        throw new Error(`gittree ne lance que des lectures ici : git ${args[0] ?? ''} refusé`)
+        throw new Error(`ctree ne lance que des lectures ici : git ${args[0] ?? ''} refusé`)
       }
 
       return run(args, options)
     },
     write: async (args, options) => {
       if (!isAllowedWrite(args)) {
-        throw new Error(`gittree refuse cette écriture : git ${args.join(' ')}`)
+        throw new Error(`ctree refuse cette écriture : git ${args.join(' ')}`)
       }
 
       return run(args, options)
@@ -89,7 +97,7 @@ export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'gittree',
+      name: 'ctree',
       description: 'Graphe git du dépôt dans un panneau à côté de la conversation',
       immediate: true,
     })
@@ -101,16 +109,18 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'gittree' }, async $ => {
+  on('command.run', { command: 'ctree' }, async ($, e) => {
     if (!ctl) {
-      return { text: 'gittree : la session démarre encore, réessaie dans un instant.' }
+      return { text: 'ctree : la session démarre encore, réessaie dans un instant.' }
     }
+
+    wanted.columns = Math.max(24, Math.floor(e.presentation.columns * DOCK_SHARE))
 
     const opened = await $.ui.open(paneArgs(true))
 
     ctl.opened()
 
-    return opened.isPlaced ? {} : { text: `gittree : ${opened.reason}` }
+    return opened.isPlaced ? {} : { text: `ctree : ${opened.reason}` }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
@@ -118,7 +128,7 @@ export const register: Register = on => {
     const { Box, Text, Button, Code } = table
 
     if (!ctl) {
-      return <Text dimColor>gittree démarre…</Text>
+      return <Text dimColor>ctree démarre…</Text>
     }
 
     ctl.shown()

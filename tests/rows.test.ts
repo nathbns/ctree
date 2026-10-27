@@ -6,6 +6,7 @@ import {
   buildView,
   commitLine,
   fileLine,
+  foldLine,
   graphWidthOf,
   headerLine,
   lineText,
@@ -13,7 +14,7 @@ import {
   wipLine,
 } from '../src/rows'
 import type { Commit, RepoSnapshot } from '../src/types'
-import { COMMITS, h, NOW, SNAPSHOT } from './fixtures'
+import { COMMITS, h, linearSnapshot, NOW, SNAPSHOT } from './fixtures'
 
 function linesAt(snapshot: RepoSnapshot, width: number, selected?: string): string[] {
   const view = buildView(snapshot)
@@ -41,17 +42,18 @@ const at = (view: View, commit: Commit, width: number) =>
 
 describe('rows', () => {
   test('the whole graph at 88 columns: lines, labels, author, date, hash', () => {
+    // Each row's graph is as wide as its own lanes; the side columns stay aligned.
     expect(linesAt(SNAPSHOT, 88, h('3'))).toEqual([
-      '  ◌     Modifications non commitées (2)',
-      '  ┊ ●   Panneau : colonnes adaptatives          feature/ui  Nathan          2 h  1111111',
-      '  ┊ ●   Navigation j/k                                      Nathan          1 j  2222222',
+      '  ◌ Modifications non commitées (2)',
+      '  ┊ ● Panneau : colonnes adaptatives            feature/ui  Nathan          2 h  1111111',
+      '  ┊ ● Navigation j/k                                        Nathan          1 j  2222222',
       // The current branch's chip is drawn inverse, padded by a space each side.
       "❯ ◉─┼─╮ Merge branch 'feature/la…  main ⇄ origin  ◇ v0.2.0  Nathan          5 h  3333333",
       '  │ │ ● Calcul des lanes : octopus m… origin/feature/lanes  Léa             6 h  4444444',
       '  │ │ ● Tests du calcul des lanes                           Léa             1 j  5555555',
       '  ●─╯ │ Étiquettes de branches                              Nathan          2 j  6666666',
       '  ●───╯ Parsing de git log                        ◇ v0.1.0  Nathan          3 j  7777777',
-      '  ●     Commit initial                                      Nathan        2 sem  8888888',
+      '  ● Commit initial                                          Nathan        2 sem  8888888',
     ])
   })
 
@@ -130,8 +132,8 @@ describe('rows', () => {
     const options = { width: 88, graphWidth: 6, columns: columnsFor(88), isSelected: false, now: NOW }
     const row = lineText(fileLine(view, h('3'), { status: 'R', path: 'src/render.ts', oldPath: 'src/graph.ts', added: 3, deleted: 1 }, options))
 
-    // The three lanes run on; the status letter sits two columns in from the messages.
-    expect(row.startsWith('  │ │ │    R src/graph.ts → src/render.ts')).toBe(true)
+    // The three lanes run on; the status letter sits two columns past them.
+    expect(row.startsWith('  │ │ │   R src/graph.ts → src/render.ts')).toBe(true)
     expect(row.endsWith('+3 −1')).toBe(true)
     expect(textWidth(row)).toBe(88)
   })
@@ -146,6 +148,47 @@ describe('rows', () => {
 
     expect(lines.some(line => line.includes('…'))).toBe(true)
     expect(lines[13]?.includes('●')).toBe(true)
+  })
+
+  test('the overview draws a folded run as one row: its count, its authors, its newest date', () => {
+    const view = buildView(linearSnapshot(12), { opened: new Set() })
+    const [fold] = [...view.folds.values()]
+
+    expect(view.commits).toHaveLength(3)
+    expect(fold?.commits).toHaveLength(10)
+
+    const line = lineText(
+      foldLine(view, fold!, { width: 88, graphWidth: 2, columns: columnsFor(88), isSelected: false, now: NOW }),
+    )
+
+    expect(line.startsWith('  ┆ ▸ 10 commits · Léa, Nathan')).toBe(true)
+    expect(line.trimEnd().endsWith('1 h')).toBe(true)
+    expect(textWidth(line)).toBe(88)
+  })
+
+  test('the header names the focus and the overview', () => {
+    const focused: RepoSnapshot = {
+      ...SNAPSHOT,
+      scope: { kind: 'focus', ref: 'refs/heads/feature/ui', label: 'feature/ui', isFirstParent: true },
+    }
+
+    expect(lineText(headerLine(focused, 120, true))).toBe(
+      'demo · ⎇ main · ✓ origin/main · ◎ feature/ui · 1er parent · ▤ vue d’ensemble',
+    )
+  })
+
+  test('a branch apart from its upstream says how far, in its label', () => {
+    const drifted: RepoSnapshot = {
+      ...SNAPSHOT,
+      refs: SNAPSHOT.refs.map(ref =>
+        ref.kind === 'branch' && ref.name === 'main' ? { ...ref, target: h('1'), track: [2, 1] as const } : ref,
+      ),
+      head: { kind: 'branch', branch: 'main', hash: h('1') },
+    }
+    const view = buildView(drifted)
+
+    expect(lineText(at(view, COMMITS[0]!, 88))).toContain('main ↑2 ↓1')
+    expect(lineText(at(view, COMMITS[2]!, 88))).toContain('origin/main')
   })
 
   test('the header says where HEAD is and how it stands against its upstream', () => {

@@ -2,14 +2,15 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { createController, type Host } from '../hooks/controller'
 import { isAllowedWrite } from '../src/git-actions'
-import { demoGit, h } from './fixtures'
+import { type Answer, demoGit, h, linearSnapshot, logOf, nth, type Script } from './fixtures'
 
 /**
  * A Host over the scripted demo repository; timers fire when `flush` says.
  * Writes are kept (and refused unless the guard admits them); `refusal`
  * makes git refuse the next one.
  */
-function fakeHost() {
+function fakeHost(script: Script = () => undefined) {
+  const runs: string[][] = []
   const timers: (() => void)[] = []
   const filled: string[] = []
   const focused: string[] = []
@@ -20,7 +21,9 @@ function fakeHost() {
 
   const host: Host = {
     git: async args => {
-      const answer = demoGit(args)
+      runs.push([...args])
+
+      const answer: Answer = script(args) ?? demoGit(args)
 
       return { code: answer.exitCode, stdout: answer.stdout, stderr: answer.stderr ?? '' }
     },
@@ -64,11 +67,27 @@ function fakeHost() {
     },
   }
 
-  return { host, filled, focused, writes, notes, git, flush: () => timers.splice(0).forEach(fn => fn()) }
+  return { host, runs, filled, focused, writes, notes, git, flush: () => timers.splice(0).forEach(fn => fn()) }
 }
 
-async function loaded() {
-  const fake = fakeHost()
+/** git for a linear history of 250 commits, `main` and HEAD on the newest. */
+const linearGit: Script = args => {
+  const all = linearSnapshot(250).commits
+  const line = args.join(' ')
+
+  if (args[0] === 'status') return { exitCode: 0, stdout: '' }
+  if (args[0] === 'rev-parse' && args.includes('--verify')) return { exitCode: 0, stdout: `${nth(0)}\n` }
+  if (args[0] === 'for-each-ref') return { exitCode: 0, stdout: `refs/heads/main\x1f${nth(0)}\x1f\x1f\x1f\x1f\n` }
+  if (args[0] !== 'log' || line.includes('..')) return undefined
+
+  const skip = Number(/--skip=(\d+)/.exec(line)?.[1] ?? 0)
+  const count = Number(/ -n(\d+)/.exec(line)?.[1] ?? 1000)
+
+  return { exitCode: 0, stdout: logOf(all.slice(skip, skip + count)) }
+}
+
+async function loaded(script?: Script) {
+  const fake = fakeHost(script)
   const ctl = createController(fake.host)
 
   ctl.opened()
@@ -277,6 +296,75 @@ describe('changes wait for their confirmation', () => {
     await ctl.confirm(1)
 
     expect(writes).toEqual([['switch', 'hotfix']])
+  })
+})
+
+describe('seeing the whole graph', () => {
+  test('v folds the linear runs, the selection carried into its fold; Enter opens the fold', async () => {
+    const { ctl } = await loaded(linearGit)
+
+    ctl.ringMoved(`c:${nth(5)}`)
+    ctl.toggleOverview()
+    await ctl.idle()
+
+    // The pages load on by themselves until the folded rows fill the pane:
+    // main's commit, the 248 commits under it as one fold, the root.
+    expect(ctl.items().map(item => item.key)).toEqual([`c:${nth(0)}`, `z:FOLD:${nth(1)}`, `c:${nth(249)}`])
+    expect(ctl.model.selected).toBe(`z:FOLD:${nth(1)}`)
+
+    await ctl.press(ctl.items()[1]!)
+
+    expect(ctl.items()).toHaveLength(250)
+    expect(ctl.model.selected).toBe(`c:${nth(1)}`)
+
+    ctl.toggleOverview()
+
+    expect(ctl.model.isOverview).toBe(false)
+    expect(ctl.model.selected).toBe(`c:${nth(1)}`)
+  })
+
+  test('e on a fold asks about the whole run', async () => {
+    const { ctl, filled } = await loaded(linearGit)
+
+    ctl.toggleOverview()
+    await ctl.idle()
+    ctl.ringMoved(`z:FOLD:${nth(1)}`)
+    await ctl.explain()
+
+    expect(filled[0]).toContain('Explique ces 248 commits')
+  })
+
+  test('f: the selected branch, then its first parents alone, then every branch again', async () => {
+    const { ctl, runs } = await loaded()
+    const lastLog = () => runs.filter(args => args[0] === 'log' && !args.join(' ').includes('..')).at(-1)?.join(' ') ?? ''
+
+    ctl.ringMoved(`c:${h('1')}`)
+    ctl.cycleFocus()
+    await ctl.idle()
+
+    expect(ctl.model.scope).toEqual({ kind: 'focus', ref: 'refs/heads/feature/ui', label: 'feature/ui', isFirstParent: false })
+    expect(lastLog()).toContain('refs/heads/feature/ui --')
+    expect(lastLog()).not.toContain('--branches')
+
+    ctl.cycleFocus()
+    await ctl.idle()
+
+    expect(lastLog()).toContain('--first-parent refs/heads/feature/ui --')
+
+    ctl.cycleFocus()
+    await ctl.idle()
+
+    expect(ctl.model.scope).toEqual({ kind: 'all' })
+    expect(lastLog()).toContain('--branches --remotes --tags --')
+  })
+
+  test('f on a remote-only branch follows the remote ref', async () => {
+    const { ctl } = await loaded()
+
+    ctl.ringMoved(`c:${h('4')}`)
+    ctl.cycleFocus()
+
+    expect(ctl.model.scope).toMatchObject({ kind: 'focus', ref: 'refs/remotes/origin/feature/lanes', label: 'origin/feature/lanes' })
   })
 })
 

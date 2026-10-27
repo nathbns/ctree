@@ -1,6 +1,7 @@
 // The labels drawn beside a commit: its branches, remote branches and tags.
 // A local branch and its remote counterpart at the same commit are one label
-// (`main ⇄ origin`); HEAD's branch comes first, a detached HEAD has its own.
+// (`main ⇄ origin`); apart, the branch says how far (`main ↑2 ↓1`). HEAD's
+// branch comes first, a detached HEAD has its own.
 
 import type { HeadState, Ref, Worktree } from './types'
 
@@ -13,6 +14,9 @@ export type Label =
       isHead: boolean
       /** Checked out in another worktree. */
       isElsewhere: boolean
+      /** Commits it has that its upstream lacks, and the other way round. */
+      ahead?: number
+      behind?: number
     }
   | { kind: 'remote'; name: string }
   | { kind: 'tag'; name: string }
@@ -62,6 +66,11 @@ export function labelsByCommit(input: {
     if (twin) {
       used.add(twin.name)
       label.remote = twin.name === `${remoteOf(twin.name)}/${branch.name}` ? remoteOf(twin.name) : twin.name
+    } else if (branch.upstream && !branch.isUpstreamGone && branch.track) {
+      const [ahead, behind] = branch.track
+
+      if (ahead > 0) label.ahead = ahead
+      if (behind > 0) label.behind = behind
     }
 
     add(branch.target, label)
@@ -83,8 +92,11 @@ export function labelsByCommit(input: {
 /** The text a label shows. */
 export function labelText(label: Label): string {
   switch (label.kind) {
-    case 'branch':
-      return `${label.name}${label.remote ? ` ⇄ ${label.remote}` : ''}${label.isElsewhere ? ' (wt)' : ''}`
+    case 'branch': {
+      const drift = [label.ahead ? `↑${label.ahead}` : '', label.behind ? `↓${label.behind}` : ''].filter(Boolean).join(' ')
+
+      return `${label.name}${label.remote ? ` ⇄ ${label.remote}` : ''}${drift ? ` ${drift}` : ''}${label.isElsewhere ? ' (wt)' : ''}`
+    }
     case 'remote':
       return label.name
     case 'tag':

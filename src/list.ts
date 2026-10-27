@@ -2,6 +2,7 @@
 // unfolded ones), the window of it the pane shows, and what a move of the
 // focus ring means for the selection.
 
+import type { Fold } from './overview'
 import { WIP } from './rows'
 import type { Commit, FileChange } from './types'
 
@@ -13,6 +14,7 @@ export type Unfolded =
 
 export type Item =
   | { kind: 'commit'; key: string; commit: Commit }
+  | { kind: 'fold'; key: string; fold: Fold }
   | { kind: 'file'; key: string; under: string; index: number; change: FileChange }
   | { kind: 'note'; key: string; under: string; text: string }
 
@@ -22,11 +24,17 @@ export const commitKey = (hash: string): string => `c:${hash}`
 
 export const fileKey = (under: string, index: number): string => `f:${under}:${index}`
 
-/** The rows below the pinned uncommitted-changes row, in drawing order. */
+export const foldKey = (id: string): string => `z:${id}`
+
+/**
+ * The rows below the pinned uncommitted-changes row, in drawing order:
+ * `commits` as the view draws them, a fold in place of each folded run.
+ */
 export function flatten(
   commits: readonly Commit[],
   unfolded: ReadonlyMap<string, Unfolded>,
   more: 'none' | 'available' | 'loading',
+  folds: ReadonlyMap<string, Fold> = new Map(),
 ): Item[] {
   const items: Item[] = []
 
@@ -53,6 +61,13 @@ export function flatten(
   filesOf(WIP)
 
   for (const commit of commits) {
+    const fold = folds.get(commit.hash)
+
+    if (fold) {
+      items.push({ kind: 'fold', key: foldKey(fold.id), fold })
+      continue
+    }
+
     items.push({ kind: 'commit', key: commitKey(commit.hash), commit })
     filesOf(commit.hash)
   }

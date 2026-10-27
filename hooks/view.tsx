@@ -10,6 +10,7 @@ import { type Item, WIP_KEY } from '../src/list'
 import {
   commitLine,
   fileLine,
+  foldLine,
   graphWidthOf,
   headerLine,
   noteLine,
@@ -36,12 +37,12 @@ export type Frame = {
 
 /** The list's keys, long while they fit on one row, else short. */
 const LONG_KEYS: readonly (readonly [string, string])[] = [
-  ['j', '↓'], ['k', '↑'], ['⏎', 'déplier'], ['e', 'expliquer'], ['c', 'branche'],
-  ['t', 'tag'], ['p', 'push'], ['r', 'rafraîchir'], ['q', 'fermer'],
+  ['j', '↓'], ['k', '↑'], ['⏎', 'ouvrir'], ['v', 'vue'], ['f', 'focus'], ['e', 'expliquer'],
+  ['c', 'branche'], ['t', 'tag'], ['p', 'push'], ['r', 'maj'], ['q', 'fermer'],
 ]
 const SHORT_KEYS: readonly (readonly [string, string])[] = [
-  ['j', '↓'], ['k', '↑'], ['⏎', ''], ['e', 'expl.'], ['c', 'br.'],
-  ['t', 'tag'], ['p', 'push'], ['r', 'maj'], ['q', '✕'],
+  ['j', '↓'], ['k', '↑'], ['⏎', ''], ['v', 'vue'], ['f', 'focus'], ['e', 'expl.'],
+  ['c', 'br.'], ['t', 'tag'], ['p', 'push'], ['r', 'maj'], ['q', '✕'],
 ]
 
 const keysWidth = (keys: readonly (readonly [string, string])[], gap: number) =>
@@ -114,7 +115,7 @@ export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
   const selected = ctl.model.selected
   const graphRows = [
     ...(hasWip ? [view.rowOf.get(WIP) ?? 0] : []),
-    ...shown.map(item => view.rowOf.get(item.kind === 'commit' ? item.commit.hash : item.under) ?? 0),
+    ...shown.map(item => view.rowOf.get(item.kind === 'commit' ? item.commit.hash : item.kind === 'fold' ? item.fold.id : item.under) ?? 0),
   ]
   const options = {
     width,
@@ -124,7 +125,7 @@ export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
   }
   const header = ctl.model.notice
     ? [{ text: truncate(ctl.model.notice, width), color: 'claude' } as Segment]
-    : headerLine(snapshot, width)
+    : headerLine(snapshot, width, ctl.model.isOverview)
   const emptyNote: Segment[] =
     items.length === 0 ? [{ text: '   Aucun commit pour l’instant.', dim: true }] : []
 
@@ -136,6 +137,7 @@ export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
 
     if (item.kind === 'commit') return row(ui, item.key, commitLine(view, item.commit, line), isStart, () => ctl.press(item))
     if (item.kind === 'file') return row(ui, item.key, fileLine(view, item.under, item.change, line), isStart, () => ctl.press(item))
+    if (item.kind === 'fold') return row(ui, item.key, foldLine(view, item.fold, line), isStart, () => ctl.press(item))
 
     return <Text>{segments(ui, noteLine(view, item.under, item.text, line))}</Text>
   }
@@ -373,6 +375,8 @@ function keys(ui: Ui, ctl: Controller, width: number, where: 'list' | 'diff' | '
       {key('j', label('j'), () => ctl.move(1))}
       {key('k', label('k'), () => ctl.move(-1))}
       <Text dimColor>{`⏎ ${label('⏎')}`.trim()}</Text>
+      {key('v', label('v'), () => ctl.toggleOverview())}
+      {key('f', label('f'), () => ctl.cycleFocus())}
       {key('e', label('e'), () => void ctl.explain())}
       {key('c', label('c'), () => ctl.beginSwitch())}
       {key('t', label('t'), () => ctl.beginTag())}

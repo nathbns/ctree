@@ -4,13 +4,13 @@ import type { Engine } from 'claude-code/testing'
 
 import { isAllowedWrite } from '../src/git-actions'
 import { isReadOnly, READ_FLAGS } from '../src/git-commands'
-import { type Answer, demoGit, h, logOf, type Script } from './fixtures'
+import { type Answer, demoGit, h, linearSnapshot, logOf, nth, type Script } from './fixtures'
 
 /** The pane docked beside a fullscreen transcript: 88 columns, 16 rows. */
 const PANE = {
-  plugin: 'gittree',
+  plugin: 'ctree',
   component: 'Pane',
-  requestId: 'gittree',
+  requestId: 'ctree',
   props: {
     title: 'Git',
     isFocused: true,
@@ -22,7 +22,7 @@ const PANE = {
 } as const
 
 const OPEN = {
-  command: 'gittree',
+  command: 'ctree',
   args: '',
   origin: { kind: 'composer' },
   presentation: { isFullscreen: true, columns: 200 },
@@ -98,12 +98,13 @@ const rowTexts = async (ui: { findAll: (q: { type: string }) => Promise<{ key: s
   (await ui.findAll({ type: 'Button' })).filter(button => !button.key?.startsWith('key-')).map(button => button.text)
 
 describe('the pane', () => {
-  test('/gittree opens a focused pane that closes on Escape', async ($, on) => {
+  test('/ctree opens a focused pane as wide as a dock may be, closing on Escape', async ($, on) => {
     const w = world(on)
 
     await openPane($, w)
 
-    expect(w.opened[0]).toMatchObject({ id: 'gittree', focus: true, closeOnEscape: true })
+    // 45% of the 200-column terminal the command saw.
+    expect(w.opened[0]).toMatchObject({ id: 'ctree', title: 'ctree', focus: true, closeOnEscape: true, columns: 90 })
   })
 
   for (const surface of ['terminal', 'desktop'] as const) {
@@ -346,6 +347,49 @@ describe('the changes (V2)', () => {
     expect(await ui.find({ type: 'Text', text: /pas de push forcé/ })).toBeDefined()
     expect(await ui.find({ key: 'act-y' })).toBeUndefined()
     expect(w.writes).toEqual([])
+    await ui.unmount()
+  })
+})
+
+describe('seeing the whole graph (V3)', () => {
+  test('v folds a long straight history into a few rows; f focuses on main', async ($, on) => {
+    const all = linearSnapshot(250).commits
+    const w = world(on, args => {
+      const line = args.join(' ')
+
+      if (args[0] === 'status') return { exitCode: 0, stdout: '' }
+      if (args[0] === 'rev-parse' && args.includes('--verify')) return { exitCode: 0, stdout: `${nth(0)}\n` }
+      if (args[0] === 'for-each-ref') return { exitCode: 0, stdout: `refs/heads/main\x1f${nth(0)}\x1f\x1f\x1f\x1f\n` }
+      if (args[0] !== 'log') return undefined
+
+      const skip = Number(/--skip=(\d+)/.exec(line)?.[1] ?? 0)
+      const count = Number(/ -n(\d+)/.exec(line)?.[1] ?? 1000)
+
+      return { exitCode: 0, stdout: logOf(all.slice(skip, skip + count)) }
+    })
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    expect((await rowTexts(ui)).length).toBeGreaterThan(5)
+
+    await ui.press({ key: 'key-v' })
+    await w.clock.settle()
+
+    // The rest loads by itself: main, the 248 commits between as one fold, the root.
+    const rows = await rowTexts(ui)
+
+    expect(rows).toHaveLength(3)
+    expect(rows[1]).toContain('▸ 248 commits · Léa, Nathan')
+    expect(rows[2]).toContain('commit 249')
+    expect(await ui.find({ type: 'Text', text: /▤ vue d’ensemble/ })).toBeDefined()
+
+    await ui.press({ key: 'key-f' })
+    await w.clock.settle()
+
+    expect(await ui.find({ type: 'Text', text: /◎ main/ })).toBeDefined()
+    expect(w.runs.some(args => args.includes('refs/heads/main'))).toBe(true)
     await ui.unmount()
   })
 })

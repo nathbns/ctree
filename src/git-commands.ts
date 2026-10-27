@@ -1,6 +1,8 @@
 // The git command lines the mod runs, and the guard that keeps them read-only.
 // Each builder returns the arguments after `git`; the runner adds READ_FLAGS.
 
+import type { LogScope } from './types'
+
 /** A record separator git never writes inside the fields we ask for. */
 export const FIELD = '\x1f'
 
@@ -60,17 +62,22 @@ export const worktrees = (): string[] => ['worktree', 'list', '--porcelain']
 /**
  * One page of history, newest first, topologically ordered so a parent never
  * comes before its children. One commit more than asked tells if more exist.
+ * All branches, or under focus one ref's history, its first parents alone
+ * when asked.
  */
 export const log = (options: {
   skip: number
   count: number
   withHead: boolean
+  scope: LogScope
 }): string[] => [
   'log', '--topo-order', '-z', '--no-color', '--no-decorate',
   `--format=${['%H', '%P', '%an', '%ae', '%at', '%s'].join('%x1f')}`,
   `--skip=${options.skip}`, `-n${options.count + 1}`,
-  ...(options.withHead ? ['HEAD'] : []),
-  '--branches', '--remotes', '--tags', '--',
+  ...(options.scope.kind === 'focus'
+    ? [...(options.scope.isFirstParent ? ['--first-parent'] : []), options.scope.ref]
+    : [...(options.withHead ? ['HEAD'] : []), '--branches', '--remotes', '--tags']),
+  '--',
 ]
 
 /**

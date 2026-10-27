@@ -1,4 +1,4 @@
-# gittree
+# ctree
 
 Un mod Claude Code qui affiche le graphe git du dépôt dans un panneau à côté de la conversation, au plus près du graphe Source Control de VS Code et de l'extension Git Graph. Il suit en direct les commandes git que Claude lance, et marque d'un `✦` les commits créés pendant la session. Il lit git, et n'écrit que trois choses, chacune après ta confirmation : changer de branche, créer un tag, pousser.
 
@@ -23,7 +23,10 @@ cd ton-projet
 claude --plugin-dir ~/ctree
 ```
 
-Puis `/gittree` au prompt. En mode plein écran (terminal d'au moins 110 colonnes), le panneau s'ancre à côté de la conversation. Sinon, il s'ouvre au-dessus du prompt.
+Puis `/ctree` au prompt.
+
+- **En mode plein écran** (terminal d'au moins 110 colonnes), le panneau s'ancre à côté de la conversation. Il demande toute la largeur permise : Claude Code la plafonne à 45 % du terminal. Si tu l'as rétréci un jour, Claude Code garde ta largeur ; **Ctrl+X puis ←** l'élargit à nouveau.
+- **Sinon**, il s'ouvre au-dessus du prompt, aussi haut que la place le permet. `/tui fullscreen` passe en plein écran.
 
 ## Touches
 
@@ -31,6 +34,8 @@ Puis `/gittree` au prompt. En mode plein écran (terminal d'au moins 110 colonne
 | --- | --- |
 | `j` / `k`, `↓` / `↑` | ligne suivante / précédente (la suite de l'historique se charge en descendant) |
 | `Entrée` | sur un commit : déplie ses fichiers ; sur un fichier : affiche son diff |
+| `v` | vue d'ensemble : replie les suites linéaires (Entrée en ouvre une) ; `v` à nouveau pour tout voir |
+| `f` | focus : l'historique de la branche sélectionnée, puis sa seule ligne (premier parent), puis toutes les branches |
 | `e` | prépare dans le prompt une question pour que Claude explique le commit (ou le fichier) sélectionné, sans l'envoyer |
 | `c` | change de branche : celle du commit sélectionné (au choix s'il en porte plusieurs) |
 | `t` | crée un tag annoté sur le commit sélectionné |
@@ -53,6 +58,20 @@ La molette et Page↑/Page↓ font défiler la liste. Dans VS Code, il n'y a pas
   - `(wt)` pour une branche extraite dans un autre worktree.
 - **Colonnes** : message, étiquettes, auteur, date relative, hash court. L'auteur disparaît sous 84 colonnes, le hash sous 72, la date sous 60.
 - **Fichiers d'un commit** : comparés à son premier parent (comme VS Code pour un merge), avec statut M/A/D/R et le nombre de lignes +/−.
+
+## Voir tout le graphe
+
+- **Chaque ligne prend la largeur de son propre graphe**, comme dans VS Code, lazygit ou tig. Une branche qui s'écarte loin à droite ne vole plus la place des messages des autres lignes.
+- **`v`, vue d'ensemble.** Ne restent que les commits qui donnent sa forme à l'historique : pointes de branches, tags, HEAD, merges, bifurcations, racines et commits `✦` de la session. Chaque suite linéaire devient une ligne `┆ ▸ 22 commits · Léa, Nathan`. Sur express, un écran couvre ainsi 9 mois au lieu de 2 semaines.
+  - La suite de l'historique se charge d'elle-même jusqu'à remplir le panneau.
+  - Entrée ouvre une suite repliée ; `e` sur une suite repliée demande à Claude d'expliquer l'ensemble.
+- **`f`, focus.** Trois crans, l'en-tête indiquant lequel est actif (`◎ main`, `◎ main · 1er parent`) :
+  1. l'historique de la branche (ou du tag, ou du commit) sélectionnée ;
+  2. sa seule ligne, au premier parent, les merges restant des `○` ;
+  3. toutes les branches.
+
+  Combiné à `v`, cela donne les versions d'un projet sur plusieurs années en un écran.
+- **Écarts avec la distante** : une branche à un autre commit que sa distante l'indique dans son étiquette, par exemple `main ↑2 ↓1`.
 
 ## Changer de branche, tagger, pousser
 
@@ -104,10 +123,10 @@ Le mod lance git sans shell, en passant les arguments directement (`$.process.ru
 ```
 src/      cœur pur, sans dépendance à Claude Code : commandes git, parsing,
           calcul des lanes, couleurs, étiquettes, mise en page, lignes,
-          actions (branche, tag, push) et leur garde
+          vue d'ensemble (repliement), actions (branche, tag, push) et leur garde
 hooks/    le mod : register.tsx (hooks), controller.ts (état), view.tsx (rendu)
 types/    contrat $.state (l'état des refs au début de la session, pour ✦)
-tests/    lanes, parsing, étiquettes et couleurs, lignes, actions, contrôleur,
+tests/    lanes, parsing, étiquettes et couleurs, lignes, vue d'ensemble, actions, contrôleur,
           panneau monté
 ```
 
@@ -116,7 +135,7 @@ tests/    lanes, parsing, étiquettes et couleurs, lignes, actions, contrôleur,
 Depuis le dossier du dépôt :
 
 ```sh
-claude plugin test .         # 94 tests
+claude plugin test .         # 110 tests
 claude plugin validate .
 npx -p typescript tsc -p .   # après un premier lancement avec --plugin-dir,
                              # qui dépose les types dans .claude-plugin/types/

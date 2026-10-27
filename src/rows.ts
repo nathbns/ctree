@@ -17,6 +17,7 @@ import {
   truncate,
   truncateStart,
 } from './layout'
+import { collapse, type Fold } from './overview'
 import type { Commit, FileChange, RepoSnapshot } from './types'
 
 export type Segment = {
@@ -33,6 +34,9 @@ export const WIP = 'WIP'
 
 /** What every row of one snapshot is drawn from, computed once per snapshot. */
 export type View = {
+  /** The commits drawn, folds standing in for the runs the overview folded. */
+  commits: Commit[]
+  folds: Map<string, Fold>
   graph: Graph
   colors: string[]
   labels: Map<string, Label[]>
@@ -42,18 +46,31 @@ export type View = {
   session: Set<string>
 }
 
-export function buildView(snapshot: RepoSnapshot): View {
+/**
+ * The view of a snapshot, its linear runs folded when `overview` is given
+ * (all but the runs it names as opened). What shapes the history is kept:
+ * refs, HEAD and this session's commits, as well as merges, forks and roots.
+ */
+export function buildView(snapshot: RepoSnapshot, overview: { opened: ReadonlySet<string> } | null = null): View {
   const head = snapshot.head.hash
-  const hasWip = snapshot.status.length > 0
+  const refsAt = refsByCommit(snapshot.refs)
+  const session = new Set(snapshot.sessionCommits)
+  const shown = overview
+    ? collapse(snapshot.commits, commit => refsAt.has(commit.hash) || commit.hash === head || session.has(commit.hash), overview.opened)
+    : { commits: [...snapshot.commits], folds: new Map<string, Fold>() }
+  // The dashed line runs to HEAD only when HEAD is drawn (not under another branch's focus).
+  const isHeadShown = head !== null && shown.commits.some(commit => commit.hash === head)
   const input = [
-    ...(hasWip ? [{ hash: WIP, parents: head ? [head] : [] }] : []),
-    ...snapshot.commits,
+    ...(snapshot.status.length > 0 ? [{ hash: WIP, parents: isHeadShown && head ? [head] : [] }] : []),
+    ...shown.commits,
   ]
   const graph = computeGraph(input, { dashed: WIP })
 
   return {
+    commits: shown.commits,
+    folds: shown.folds,
     graph,
-    colors: colorPaths(graph, refsByCommit(snapshot.refs), head),
+    colors: colorPaths(graph, refsAt, head),
     labels: labelsByCommit({
       refs: snapshot.refs,
       head: snapshot.head,
@@ -62,7 +79,7 @@ export function buildView(snapshot: RepoSnapshot): View {
     }),
     rowOf: new Map(input.map((commit, row) => [commit.hash, row])),
     head,
-    session: new Set(snapshot.sessionCommits),
+    session,
   }
 }
 
@@ -132,8 +149,13 @@ export function graphWidthOf(view: View, rows: readonly number[], limit: number)
   return Math.min(widest, limit)
 }
 
-/** Fits cells into `width` columns, keeping the node visible past the cut. */
-function fitCells(cells: Cell[], width: number, nodeAt: number): Cell[] {
+/**
+ * A row's own graph, as wide as its lanes (as VS Code, lazygit and tig draw
+ * it) and no wider than `limit`, its node kept visible past a cut.
+ */
+function fitCells(cells: Cell[], limit: number, nodeAt: number): Cell[] {
+  const width = Math.min(limit, Math.max(1, cells.length))
+
   if (cells.length <= width) {
     return [...cells, ...Array.from({ length: width - cells.length }, () => ({ char: ' ' }))]
   }
@@ -169,7 +191,7 @@ function cellSegments(cells: readonly Cell[]): Segment[] {
 export type LineOptions = {
   /** Columns of the whole row. */
   width: number
-  /** Columns of the graph, from graphWidthOf. */
+  /** The widest a row's graph may be, from graphWidthOf; each row takes only its own lanes. */
   graphWidth: number
   columns: Columns
   isSelected: boolean
@@ -184,7 +206,7 @@ function pointer(isSelected: boolean): Segment {
 export function nodeGlyph(view: View, commit: Commit): string {
   if (commit.hash === view.head) return '◉'
 
-  return commit.parents.length > 1 ? '○' : '●'
+  return commit.isMerge || commit.parents.length > 1 ? '○' : '●'
 }
 
 /** A commit's row: graph, message, labels, author, date, hash. */
@@ -193,7 +215,7 @@ export function commitLine(view: View, commit: Commit, options: LineOptions): Se
   const color = view.colors[view.graph.rows[row]?.path ?? -1]
   const lane = view.graph.rows[row]?.lane ?? -1
   const graph = fitCells(rowCells(view, row, nodeGlyph(view, commit)), options.graphWidth, lane * 2)
-  const area = Math.max(4, options.width - 2 - options.graphWidth - 1 - sideWidth(options.columns))
+  const area = Math.max(4, options.width - 2 - graph.length - 1 - sideWidth(options.columns))
   const isSession = view.session.has(commit.hash)
   const chips = fitLabels(view.labels.get(commit.hash) ?? [], color, labelBudget(area))
   const chipsWidth = chips.reduce((sum, chip) => sum + textWidth(chip.text), 0)
@@ -213,6 +235,30 @@ export function commitLine(view: View, commit: Commit, options: LineOptions): Se
   ])
 }
 
+/** A folded run: `▸ 7 commits · Nathan, Léa`, its newest date. */
+export function foldLine(view: View, fold: Fold, options: LineOptions): Segment[] {
+  const row = view.rowOf.get(fold.id) ?? -1
+  const lane = view.graph.rows[row]?.lane ?? -1
+  const graph = fitCells(rowCells(view, row, '┆'), options.graphWidth, lane * 2)
+  const area = Math.max(4, options.width - 2 - graph.length - 1 - sideWidth(options.columns))
+  const names = [...new Set(fold.commits.map(commit => shortAuthor(commit.author)))]
+  const who = names.length > 2 ? `${names.slice(0, 2).join(', ')}…` : names.join(', ')
+  const text = truncate(`▸ ${fold.commits.length} commits${who ? ` · ${who}` : ''}`, area)
+  const newest = fold.commits[0]
+  const gap = ' '.repeat(GAP)
+
+  return merge([
+    pointer(options.isSelected),
+    ...cellSegments(graph),
+    { text: ' ' },
+    { text, dim: true },
+    { text: ' '.repeat(Math.max(0, area - textWidth(text))) },
+    ...(options.columns.author ? [{ text: gap + ' '.repeat(AUTHOR_WIDTH) }] : []),
+    ...(options.columns.date && newest ? [{ text: gap + padStart(relativeDate(newest.time, options.now), DATE_WIDTH), dim: true as const }] : []),
+    ...(options.columns.hash ? [{ text: gap + ' '.repeat(7) }] : []),
+  ])
+}
+
 /** The pinned row of uncommitted changes. */
 export function wipLine(view: View, count: number, options: LineOptions): Segment[] {
   const row = view.rowOf.get(WIP) ?? -1
@@ -223,7 +269,7 @@ export function wipLine(view: View, count: number, options: LineOptions): Segmen
     pointer(options.isSelected),
     ...cellSegments(graph).map(segment => ({ ...segment, color: segment.color ?? DASHED_COLOR })),
     { text: ' ' },
-    { text: truncate(text, Math.max(4, options.width - 3 - options.graphWidth)), bold: true },
+    { text: truncate(text, Math.max(4, options.width - 3 - graph.length)), bold: true },
   ])
 }
 
@@ -233,9 +279,9 @@ export function fileLine(view: View, under: string, change: FileChange, options:
   const graph = fitCells(belowCells(view, row), options.graphWidth, -1)
   const letter = statusLetter(change.status)
   const amount = counts(change.added, change.deleted)
-  const room = Math.max(4, options.width - 2 - options.graphWidth - 1 - 4 - textWidth(amount) - 2)
+  const room = Math.max(4, options.width - 2 - graph.length - 1 - 4 - textWidth(amount) - 2)
   const name = truncateStart(change.oldPath ? `${change.oldPath} → ${change.path}` : change.path, room)
-  const gap = Math.max(1, options.width - 2 - options.graphWidth - 1 - 4 - textWidth(name) - textWidth(amount))
+  const gap = Math.max(1, options.width - 2 - graph.length - 1 - 4 - textWidth(name) - textWidth(amount))
   const [added, deleted] = amount.split(' ')
 
   return merge([
@@ -263,12 +309,12 @@ export function noteLine(view: View, under: string, text: string, options: LineO
     pointer(options.isSelected),
     ...cellSegments(graph),
     { text: '   ' },
-    { text: truncate(text, Math.max(4, options.width - 6 - options.graphWidth)), dim: true },
+    { text: truncate(text, Math.max(4, options.width - 6 - graph.length)), dim: true },
   ])
 }
 
 /** The line above the graph: repository, branch, how it stands against its upstream. */
-export function headerLine(snapshot: RepoSnapshot, width: number): Segment[] {
+export function headerLine(snapshot: RepoSnapshot, width: number, isOverview = false): Segment[] {
   const parts: Segment[][] = [[{ text: snapshot.repo.name, bold: true }]]
   const head = snapshot.head
 
@@ -291,6 +337,14 @@ export function headerLine(snapshot: RepoSnapshot, width: number): Segment[] {
     }
   }
 
+  if (snapshot.scope.kind === 'focus') {
+    parts.push([{ text: `◎ ${snapshot.scope.label}${snapshot.scope.isFirstParent ? ' · 1er parent' : ''}`, color: 'suggestion', bold: true }])
+  }
+
+  if (isOverview) {
+    parts.push([{ text: '▤ vue d’ensemble', color: 'suggestion' }])
+  }
+
   if (snapshot.repo.isLinkedWorktree) {
     parts.push([{ text: 'worktree secondaire', color: 'warning' }])
   }
@@ -304,12 +358,26 @@ export function headerLine(snapshot: RepoSnapshot, width: number): Segment[] {
 
 /** The question `e` puts in the prompt for a commit. */
 export function explainCommitPrompt(commit: Commit): string {
-  const kind = commit.parents.length > 1 ? 'le merge' : 'le commit'
+  const kind = commit.isMerge || commit.parents.length > 1 ? 'le merge' : 'le commit'
 
   return (
     `Explique ${kind} ${shortHash(commit.hash)} « ${commit.subject} » ` +
     `(${commit.author}, ${absoluteDate(commit.time)} UTC) : ce qu'il change, pourquoi, ` +
     `et ce qu'il faut surveiller. Lis-le avec git show ${shortHash(commit.hash)}.`
+  )
+}
+
+/** The question `e` puts in the prompt for a folded run. */
+export function explainRangePrompt(fold: Fold): string {
+  const newest = fold.commits[0]
+  const oldest = fold.commits[fold.commits.length - 1]
+
+  if (!newest || !oldest) return ''
+
+  return (
+    `Explique ces ${fold.commits.length} commits, de ${shortHash(oldest.hash)} « ${oldest.subject} » ` +
+    `à ${shortHash(newest.hash)} « ${newest.subject} » : ce qu'ils changent ensemble et pourquoi. ` +
+    `Lis-les avec git log -p ${shortHash(oldest.hash)}~1..${shortHash(newest.hash)}.`
   )
 }
 

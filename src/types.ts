@@ -9,6 +9,11 @@ export type Commit = {
   /** Author date, seconds since the epoch. */
   time: number
   subject: string
+  /**
+   * A merge whose other parents were left out (a first-parent log draws
+   * the branch's own line): still drawn ○.
+   */
+  isMerge?: true
 }
 
 export type RefKind = 'branch' | 'remote' | 'tag'
@@ -68,6 +73,19 @@ export type RepoInfo = {
   isLinkedWorktree: boolean
 }
 
+/** Which history the log reads: every branch, or one ref's (focus). */
+export type LogScope =
+  | { kind: 'all' }
+  | {
+      kind: 'focus'
+      /** A full ref name (`refs/heads/main`) or a commit hash. */
+      ref: string
+      /** What the header calls it (`main`). */
+      label: string
+      /** Only the first parent of each merge: the branch's own line. */
+      isFirstParent: boolean
+    }
+
 export type RepoSnapshot = {
   kind: 'repo'
   repo: RepoInfo
@@ -76,6 +94,8 @@ export type RepoSnapshot = {
   commits: readonly Commit[]
   /** More commits exist past the ones loaded. */
   hasMore: boolean
+  /** The history the commits were read from. */
+  scope: LogScope
   status: readonly StatusEntry[]
   worktrees: readonly Worktree[]
   /** Commits this session created (rebased ones included). */

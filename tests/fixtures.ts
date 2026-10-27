@@ -37,6 +37,7 @@ export const SNAPSHOT: RepoSnapshot = {
   ],
   commits: COMMITS,
   hasMore: false,
+  scope: { kind: 'all' },
   status: [
     { path: 'a.txt', code: 'M' },
     { path: 'untracked.txt', code: '?' },
@@ -120,5 +121,28 @@ export function demoGit(args: readonly string[]): Answer {
       return { exitCode: 0, stdout: DIFF }
     default:
       return { exitCode: 1, stdout: '', stderr: `unexpected git ${line}` }
+  }
+}
+
+/** The hash of the `i`-th commit of a linear history. */
+export const nth = (i: number): string => i.toString(16).padStart(40, '0')
+
+/** `count` commits in one line, `main` (and HEAD) on the newest, no changes waiting. */
+export function linearSnapshot(count: number): RepoSnapshot {
+  const commits: Commit[] = Array.from({ length: count }, (_, i) => ({
+    hash: nth(i),
+    parents: i < count - 1 ? [nth(i + 1)] : [],
+    author: i % 2 ? 'Léa Martin' : 'Nathan Test',
+    email: '',
+    time: Math.floor(NOW / 1000) - i * 3600,
+    subject: `commit ${i}`,
+  }))
+
+  return {
+    ...SNAPSHOT,
+    head: { kind: 'branch', branch: 'main', hash: nth(0) },
+    refs: [{ kind: 'branch', name: 'main', target: nth(0) }],
+    commits,
+    status: [],
   }
 }

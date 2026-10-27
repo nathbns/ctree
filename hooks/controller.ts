@@ -13,9 +13,11 @@ import {
   tagNameError,
 } from '../src/git-actions'
 import { PAGE_SIZE, sshCommand } from '../src/git-commands'
+import { isSafeRefName } from '../src/git-actions'
 import {
   commitKey,
   flatten,
+  foldKey,
   focusMove,
   type Item,
   step,
@@ -34,8 +36,17 @@ import {
   loadWipDiff,
   loadWipFiles,
 } from '../src/repo'
-import { buildView, explainCommitPrompt, explainFilePrompt, explainWipPrompt, type View, WIP } from '../src/rows'
-import type { Commit, FileChange, GitResult, GitRunner, Snapshot } from '../src/types'
+import { type Fold, foldHolding } from '../src/overview'
+import {
+  buildView,
+  explainCommitPrompt,
+  explainFilePrompt,
+  explainRangePrompt,
+  explainWipPrompt,
+  type View,
+  WIP,
+} from '../src/rows'
+import type { Commit, FileChange, GitResult, GitRunner, LogScope, RepoSnapshot, Snapshot } from '../src/types'
 
 export type Host = {
   git: GitRunner
@@ -97,6 +108,11 @@ export type Model = {
   isEscapeKept: boolean
   /** A change being prepared, confirmed or run. */
   action: Band | null
+  /** Linear runs folded (`v`), but for the folds opened since. */
+  isOverview: boolean
+  openedFolds: ReadonlySet<string>
+  /** All branches, or one ref's history (`f`). */
+  scope: LogScope
 }
 
 export const INITIAL: Model = {
@@ -111,10 +127,15 @@ export const INITIAL: Model = {
   notice: null,
   isEscapeKept: false,
   action: null,
+  isOverview: false,
+  openedFolds: new Set(),
+  scope: { kind: 'all' },
 }
 
 /** Rows from the window's end at which the next page starts loading. */
 const PREFETCH_ROWS = 15
+/** Under the overview, pages load by themselves until the folded rows fill the pane, up to this many commits. */
+const AUTO_FILL_COMMITS = 2000
 export const REFRESH_DEBOUNCE_MS = 150
 const NOTICE_MS = 8000
 const PUSH_TIMEOUT_MS = 120_000
@@ -141,7 +162,33 @@ export function createController(host: Host) {
   const hasWip = () => (repoOf()?.status.length ?? 0) > 0
 
   const itemsOf = (from: Model = model): Item[] =>
-    from.snapshot?.kind === 'repo' ? flatten(from.snapshot.commits, from.unfolded, from.more) : []
+    from.view ? flatten(from.view.commits, from.unfolded, from.more, from.view.folds) : []
+
+  /** The view of a snapshot as the model wants it: folded under the overview. */
+  const viewOf = (snapshot: RepoSnapshot, from: Model = model): View =>
+    buildView(snapshot, from.isOverview ? { opened: from.openedFolds } : null)
+
+  /**
+   * The selection carried into new rows: kept when still there, else the
+   * fold now holding its commit, else HEAD, else the first row.
+   */
+  const carried = (items: readonly Item[], view: View, snapshot: RepoSnapshot): string | null => {
+    const selected = model.selected
+
+    if (selected === WIP_KEY && snapshot.status.length > 0) return selected
+    if (selected && items.some(item => item.key === selected)) return selected
+
+    const hash = selected?.startsWith('c:') ? selected.slice(2) : null
+    const fold = hash ? foldHolding(view.folds, hash) : undefined
+
+    if (fold) return foldKey(fold.id)
+
+    const head = snapshot.head.hash
+
+    if (head && items.some(item => item.key === commitKey(head))) return commitKey(head)
+
+    return keyOf(snapshot.status.length > 0 ? -1 : 0, items)
+  }
 
   const indexOf = (key: string | null, items: readonly Item[]): number => {
     if (key === WIP_KEY && hasWip()) return -1
@@ -191,8 +238,9 @@ export function createController(host: Host) {
         await host.baseline.set(baseline)
       }
 
-      const count = Math.max(PAGE_SIZE, repo?.commits.length ?? 0)
-      const snapshot = await loadSnapshot(host.git, cwd, { count, baseline })
+      const isSameScope = repo !== null && JSON.stringify(repo.scope) === JSON.stringify(model.scope)
+      const count = Math.max(PAGE_SIZE, isSameScope ? repo.commits.length : 0)
+      const snapshot = await loadSnapshot(host.git, cwd, { count, baseline, scope: model.scope })
 
       if (ticket === generation) {
         adopt(snapshot, before)
@@ -218,18 +266,17 @@ export function createController(host: Host) {
       unfolded.set(WIP, { state: 'loading' })
     }
 
+    const view = viewOf(snapshot)
     const next: Model = {
       ...model,
       snapshot,
-      view: buildView(snapshot),
+      view,
       isLoading: false,
       more: snapshot.hasMore ? 'available' : 'none',
       unfolded,
     }
     const items = itemsOf(next)
-    const headKey = snapshot.head.hash ? commitKey(snapshot.head.hash) : null
-    const isKept = model.selected !== null && (items.some(item => item.key === model.selected) || (model.selected === WIP_KEY && snapshot.status.length > 0))
-    const selected = isKept ? model.selected : headKey ?? keyOf(snapshot.status.length > 0 ? -1 : 0, items)
+    const selected = carried(items, view, snapshot)
     const index = Math.max(0, items.findIndex(item => item.key === selected))
 
     model = { ...next, selected, top: windowTop(items.length, index, model.top, windowSize) }
@@ -239,9 +286,19 @@ export function createController(host: Host) {
     }
 
     host.invalidate()
+    fill()
 
     if (unfolded.has(WIP)) {
       void unfoldWip()
+    }
+  }
+
+  /** Under the overview a few folded rows may not fill the pane: load on until they do. */
+  const fill = () => {
+    const repo = repoOf()
+
+    if (repo && model.isOverview && model.more === 'available' && repo.commits.length < AUTO_FILL_COMMITS && itemsOf().length < windowSize + PREFETCH_ROWS) {
+      running = more()
     }
   }
 
@@ -261,8 +318,9 @@ export function createController(host: Host) {
       const next = await loadMore(host.git, repo)
 
       if (ticket === generation) {
-        model = { ...model, snapshot: next, view: buildView(next), more: next.hasMore ? 'available' : 'none' }
+        model = { ...model, snapshot: next, view: viewOf(next), more: next.hasMore ? 'available' : 'none' }
         host.invalidate()
+        fill()
       }
     } catch {
       set({ more: 'available' })
@@ -389,9 +447,45 @@ export function createController(host: Host) {
   /** The commit of the selected row, or of the file row under it. */
   const selectedCommit = (): Commit | null => {
     const item = itemsOf().find(one => one.key === model.selected)
-    const hash = item?.kind === 'commit' ? item.commit.hash : item ? item.under : null
+    const hash = item?.kind === 'commit' ? item.commit.hash : item?.kind === 'file' || item?.kind === 'note' ? item.under : null
 
     return repoOf()?.commits.find(commit => commit.hash === hash) ?? null
+  }
+
+  /** Draws the loaded snapshot again under new view settings, the selection carried. */
+  const rebuild = (patch: Partial<Model>, select?: string) => {
+    const repo = repoOf()
+
+    model = { ...model, ...patch }
+
+    if (repo) {
+      const view = viewOf(repo)
+      const items = itemsOf({ ...model, view })
+      const selected = select ?? carried(items, view, repo)
+      const index = Math.max(0, items.findIndex(item => item.key === selected))
+
+      model = { ...model, view, selected, top: windowTop(items.length, index, model.top, windowSize) }
+    }
+
+    host.invalidate()
+    fill()
+  }
+
+  /** The ref `f` focuses on: the selected commit's branch, remote branch or tag, else the commit. */
+  const focusTarget = (): { ref: string; label: string } | null => {
+    const commit = selectedCommit()
+    const labels = commit ? model.view?.labels.get(commit.hash) ?? [] : []
+
+    for (const label of labels) {
+      if (label.kind === 'branch') return { ref: `refs/heads/${label.name}`, label: label.name }
+      if (label.kind === 'remote') return { ref: `refs/remotes/${label.name}`, label: label.name }
+    }
+
+    for (const label of labels) {
+      if (label.kind === 'tag') return { ref: `refs/tags/${label.name}`, label: label.name }
+    }
+
+    return commit ? { ref: commit.hash, label: commit.hash.slice(0, 7) } : null
   }
 
   /** Shows a band, the ring on `focusKey` (the cancel key, so a stray Enter cancels). */
@@ -437,7 +531,7 @@ export function createController(host: Host) {
       }
     },
 
-    /** /gittree opened the pane: load it afresh. */
+    /** /ctree opened the pane: load it afresh. */
     opened() {
       isOpen = true
       void refresh()
@@ -462,8 +556,15 @@ export function createController(host: Host) {
 
     refresh,
 
-    /** Settles once the last scheduled refresh has. */
-    idle: () => running,
+    /** Settles once the last refresh or load, and any it started, has. */
+    async idle() {
+      let last: Promise<void>
+
+      do {
+        last = running
+        await last
+      } while (last !== running)
+    },
 
     /** A refresh a moment after the last of a burst of tool calls. */
     schedule(scope: 'all' | 'status') {
@@ -551,6 +652,16 @@ export function createController(host: Host) {
         return toggle(WIP)
       }
 
+      if (item.kind === 'fold') {
+        // The run opens in place, its newest commit selected.
+        const newest = item.fold.commits[0]
+
+        return rebuild(
+          { openedFolds: new Set([...model.openedFolds, item.fold.id]), notice: null },
+          newest ? commitKey(newest.hash) : undefined,
+        )
+      }
+
       select(itemsOf().findIndex(one => one.key === item.key))
 
       if (item.kind === 'commit') return toggle(item.commit.hash)
@@ -590,6 +701,35 @@ export function createController(host: Host) {
           : 'Le prompt n’a pas pu être rempli ici',
         isFilled,
       )
+    },
+
+    /** v: folds linear runs (or unfolds them all), the selection kept in sight. */
+    toggleOverview() {
+      rebuild({ isOverview: !model.isOverview, openedFolds: new Set(), notice: null, isEscapeKept: false })
+    },
+
+    /**
+     * f: all branches → the selected branch's history → its first parents
+     * alone → all branches again. The log is read again for each.
+     */
+    cycleFocus() {
+      const scope = model.scope
+      let next: LogScope = { kind: 'all' }
+
+      if (scope.kind === 'all') {
+        const target = focusTarget()
+
+        if (!target || !(isSafeRefName(target.ref) || /^[0-9a-f]{40,64}$/.test(target.ref))) {
+          return showNotice('Sélectionne un commit ou une branche à suivre', false)
+        }
+
+        next = { kind: 'focus', ...target, isFirstParent: false }
+      } else if (!scope.isFirstParent) {
+        next = { ...scope, isFirstParent: true }
+      }
+
+      set({ scope: next, notice: null, isEscapeKept: false })
+      running = refresh('all')
     },
 
     /** c: switch to the selected commit's branch (a choice when it has several). */
@@ -758,6 +898,7 @@ function promptFor(model: Model, commits: readonly Commit[], items: readonly Ite
 
   if (!item) return null
   if (item.kind === 'commit') return explainCommitPrompt(item.commit)
+  if (item.kind === 'fold') return explainRangePrompt(item.fold)
 
   if (item.kind === 'file') {
     const commit = commits.find(one => one.hash === item.under)
