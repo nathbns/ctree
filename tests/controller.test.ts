@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { createController, type Host } from '../hooks/controller'
+import { createController, type Host, LET_IT_RUN, REFUSE } from '../hooks/controller'
 import { isAllowedWrite } from '../src/git-actions'
+import type { JournalEntry, RefState } from '../src/journal'
 import { type Answer, demoGit, h, linearSnapshot, logOf, nth, type Script } from './fixtures'
 
 /**
@@ -16,14 +17,31 @@ function fakeHost(script: Script = () => undefined) {
   const focused: string[] = []
   const writes: string[][] = []
   const notes: string[] = []
-  const git = { refusal: null as string | null }
+  const asked: string[] = []
+  const git = { refusal: null as string | null, answer: LET_IT_RUN as string | null }
+  // The repository's refs, which the undo writes move for real.
+  const repo: RefState = {
+    refs: { 'refs/heads/main': h('3'), 'refs/heads/feature/ui': h('1'), 'refs/remotes/origin/main': h('3') },
+    head: { branch: 'main', hash: h('3') },
+  }
   let baseline: readonly string[] | null = null
+  let journal: readonly JournalEntry[] | null = null
+  let start: (RefState & { at: number }) | null = null
+
+  const refGit = (args: readonly string[]): Answer | undefined => {
+    if (args[0] === 'for-each-ref' && args.includes('--format=%(refname)%1f%(objectname)')) {
+      return { exitCode: 0, stdout: Object.entries(repo.refs).map(([ref, hash]) => `${ref}\x1f${hash}`).join('\n') + '\n' }
+    }
+    if (args[0] === 'symbolic-ref') return repo.head.branch ? { exitCode: 0, stdout: `refs/heads/${repo.head.branch}\n` } : { exitCode: 1, stdout: '' }
+
+    return undefined
+  }
 
   const host: Host = {
     git: async args => {
       runs.push([...args])
 
-      const answer: Answer = script(args) ?? demoGit(args)
+      const answer: Answer = script(args) ?? refGit(args) ?? demoGit(args)
 
       return { code: answer.exitCode, stdout: answer.stdout, stderr: answer.stderr ?? '' }
     },
@@ -36,7 +54,43 @@ function fakeHost(script: Script = () => undefined) {
 
       git.refusal = null
 
-      return refusal ? { code: 1, stdout: '', stderr: `error: ${refusal}\nhint: try again\n` } : { code: 0, stdout: '', stderr: '' }
+      if (refusal) return { code: 1, stdout: '', stderr: `error: ${refusal}\nhint: try again\n` }
+
+      const [command, a = '', b = ''] = args
+
+      if (command === 'reset' && repo.head.branch) {
+        repo.refs[`refs/heads/${repo.head.branch}`] = b
+        repo.head = { ...repo.head, hash: b }
+      } else if (command === 'switch' && a !== '--detach' && a !== '--track') {
+        repo.head = { branch: a, hash: repo.refs[`refs/heads/${a}`] ?? null }
+      } else if (command === 'update-ref' && a === '-d') {
+        delete repo.refs[b]
+      } else if (command === 'update-ref') {
+        repo.refs[a] = b
+      } else if (command === 'stash' && a === 'create') {
+        return { code: 0, stdout: `${h('5')}\n`, stderr: '' }
+      }
+
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    ask: async question => {
+      asked.push(question)
+
+      return git.answer
+    },
+    turns: async () => 4,
+    now: async () => 1_800_000_000_000,
+    journal: {
+      get: async () => journal,
+      set: async entries => {
+        journal = entries
+      },
+    },
+    start: {
+      get: async () => start,
+      set: async value => {
+        start = value
+      },
     },
     note: async text => {
       notes.push(text)
@@ -67,7 +121,7 @@ function fakeHost(script: Script = () => undefined) {
     },
   }
 
-  return { host, runs, filled, focused, writes, notes, git, flush: () => timers.splice(0).forEach(fn => fn()) }
+  return { host, runs, filled, focused, writes, notes, asked, git, repo, flush: () => timers.splice(0).forEach(fn => fn()) }
 }
 
 /** git for a linear history of 250 commits, `main` and HEAD on the newest. */
@@ -365,6 +419,126 @@ describe('seeing the whole graph', () => {
     ctl.cycleFocus()
 
     expect(ctl.model.scope).toMatchObject({ kind: 'focus', ref: 'refs/remotes/origin/feature/lanes', label: 'origin/feature/lanes' })
+  })
+})
+
+describe('the guard on Claude’s git commands', () => {
+  test('a command that loses nothing runs without a question', async () => {
+    const { ctl, asked } = await loaded()
+
+    expect(await ctl.guard('git status && git log -n5')).toEqual({})
+    expect(await ctl.guard('git commit -am "x"')).toEqual({})
+    expect(asked).toEqual([])
+  })
+
+  test('reset --hard asks, saying what would go; refused, Claude reads why', async () => {
+    const { ctl, asked, git } = await loaded()
+
+    git.answer = REFUSE
+
+    const verdict = await ctl.guard('git reset --hard HEAD~1')
+
+    expect(asked[0]).toContain('Claude veut lancer « git reset --hard HEAD~1 »')
+    expect(asked[0]).toContain('1 fichier modifié perdu : a.txt')
+    expect(verdict.deny).toContain('la personne a refusé « git reset --hard HEAD~1 »')
+    expect(ctl.model.action).toBeNull()
+  })
+
+  test('let through, it saves the changes it is about to throw away', async () => {
+    const { ctl, writes } = await loaded()
+
+    expect(await ctl.guard('git checkout -- .')).toEqual({ saved: { hash: h('5'), files: 1 } })
+    expect(writes).toEqual([['stash', 'create']])
+  })
+
+  test('a dismissed question refuses the command', async () => {
+    const { ctl, git } = await loaded()
+
+    git.answer = null
+
+    expect((await ctl.guard('git push --force')).deny).toBeDefined()
+  })
+})
+
+describe('the journal and its undo', () => {
+  test('Claude’s commit goes in the journal; u undoes it softly once confirmed, and Claude is told', async () => {
+    const { ctl, repo, writes, notes } = await loaded()
+    const before = await ctl.watch()
+
+    repo.refs['refs/heads/main'] = h('9')
+    repo.head = { branch: 'main', hash: h('9') }
+    await ctl.record('git commit -am "wip"', before!, { isSubagent: false })
+
+    expect(ctl.model.journal).toHaveLength(1)
+    expect(ctl.model.journal[0]).toMatchObject({ turn: 4, command: 'git commit -am "wip"', moves: [{ ref: 'refs/heads/main', before: h('3'), after: h('9') }] })
+
+    await ctl.beginUndo()
+
+    expect(ctl.model.action).toMatchObject({ kind: 'confirm', action: { args: ['reset', '--soft', h('3')] } })
+    expect(writes).toEqual([])
+
+    await ctl.confirm()
+
+    expect(repo.refs['refs/heads/main']).toBe(h('3'))
+    expect(ctl.model.journal[0]?.isUndone).toBe(true)
+    expect(notes.at(-1)).toContain('la personne a annulé ta commande « git commit -am "wip" » (tour 4)')
+  })
+
+  test('a reset --hard with saved changes offers both: the branch alone, or the files too', async () => {
+    const { ctl, repo } = await loaded()
+    const before = await ctl.watch()
+    const saved = await ctl.guard('git reset --hard HEAD~2')
+
+    repo.refs['refs/heads/main'] = h('7')
+    repo.head = { branch: 'main', hash: h('7') }
+    await ctl.record('git reset --hard HEAD~2', before!, { isSubagent: false, ...saved })
+    await ctl.beginUndo()
+
+    expect(ctl.model.action).toMatchObject({ kind: 'choose' })
+
+    const band = ctl.model.action
+
+    if (band?.kind !== 'choose') throw new Error('no choice')
+
+    expect(band.actions.map(action => [action.args, ...(action.then ?? [])])).toEqual([
+      [['reset', '--keep', h('3')]],
+      [['reset', '--keep', h('3')], ['stash', 'apply', h('5')]],
+    ])
+  })
+
+  test('a command that changed nothing is not journaled; with nothing to undo, u says so', async () => {
+    const { ctl } = await loaded()
+    const before = await ctl.watch()
+
+    await ctl.record('git log', before!, { isSubagent: false })
+
+    expect(ctl.model.journal).toHaveLength(0)
+
+    await ctl.beginUndo()
+
+    expect(ctl.model.notice).toContain('Rien à annuler')
+  })
+})
+
+describe('the session view', () => {
+  test('what moved since the session started, its commits and HEAD’s files', async () => {
+    const { ctl, repo } = await loaded()
+
+    await ctl.recordStart()
+    repo.refs['refs/heads/main'] = h('4')
+    repo.refs['refs/heads/new'] = h('4')
+    await ctl.openSession()
+
+    const mode = ctl.model.mode
+
+    if (mode.kind !== 'session' || !mode.data) throw new Error('no session data')
+
+    expect(mode.data.refs.map(ref => [ref.name, ref.change])).toEqual([
+      ['main', 'moved'],
+      ['new', 'new'],
+    ])
+    expect(ctl.escape()).toBe('back')
+    expect(ctl.model.mode.kind).toBe('list')
   })
 })
 

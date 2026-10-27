@@ -114,6 +114,34 @@ export const rangeLog = (range: readonly string[]): string[] => [
 
 export const sshCommand = (): string[] => ['config', '--get', 'core.sshCommand']
 
+/** Every branch, tag and remote branch with the object it names, for the journal. */
+export const refState = (): string[] => [
+  'for-each-ref', '--format=%(refname)%1f%(objectname)', 'refs/heads', 'refs/tags', 'refs/remotes',
+]
+
+export const stashList = (): string[] => ['stash', 'list', '--format=%gd%x1f%s']
+
+/** What `git clean` with these flags would delete, deleting nothing. */
+export const cleanDryRun = (flags: { dirs: boolean; ignored: 'no' | 'also' | 'only' }, paths: readonly string[]): string[] => [
+  'clean', '-n',
+  ...(flags.dirs ? ['-d'] : []),
+  ...(flags.ignored === 'also' ? ['-x'] : flags.ignored === 'only' ? ['-X'] : []),
+  '--', ...paths,
+]
+
+/** How many commits `to` has that `from` lacks. */
+export const countRange = (from: string, to: string): string[] => ['rev-list', '--count', `${from}..${to}`, '--']
+
+/** Some commits by hash, in the order given. */
+export const commitsByHash = (hashes: readonly string[]): string[] => [
+  'log', '--no-walk=unsorted', '-z', '--no-color', '--no-decorate',
+  `--format=${['%H', '%P', '%an', '%ae', '%at', '%s'].join('%x1f')}`,
+  ...hashes, '--',
+]
+
+/** A resolved commit, or exit 1: `rev-parse --verify` of `<rev>^{commit}`. */
+export const resolveCommit = (rev: string): string[] => ['rev-parse', '-q', '--verify', '--end-of-options', `${rev}^{commit}`]
+
 /** What a commit changes against its first parent: counts, then statuses. */
 export const commitNumstat = (hash: string, parent: string | undefined): string[] =>
   parent === undefined
@@ -173,6 +201,8 @@ const READS: Record<string, (rest: readonly string[]) => boolean> = {
   'remote': rest => rest.length === 0,
   'ls-remote': rest => rest.length === 3 && rest[0] === '--tags' && rest[1] === '--refs' && !rest[2]?.startsWith('-'),
   'tag': rest => rest[0] === '--list' && !rest.some(arg => /^-[adfmsuF]$|^--(delete|force|annotate|sign|message|file)/.test(arg)),
+  'stash': rest => rest[0] === 'list',
+  'clean': rest => rest[0] === '-n' && !rest.some(arg => /^-[^-]*[fi]|^--(force|interactive)/.test(arg)),
   'symbolic-ref': rest => rest.length === 2 && rest[0] === '-q' && rest[1] === 'HEAD',
 }
 

@@ -1,9 +1,17 @@
 {
   "name": "ctree",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Graphe git du dépôt dans un panneau à côté de la conversation, qui suit les commandes git de Claude ; branche, tag et push avec confirmation",
   "author": {
     "name": "nathbns"
   },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "guard": {
+      "type": "boolean",
+      "title": "Garde-fou",
+      "description": "Demander avant que Claude lance une commande git qui perdrait du travail (reset --hard, checkout --, clean -f, stash drop, push --force, branch -D…)",
+      "default": true
+    }
+  }
 }

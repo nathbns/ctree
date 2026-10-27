@@ -1,7 +1,8 @@
 // The pane's state and everything that changes it: loading, refreshing,
-// selection, unfolding, the diff view, the question for Claude, and the three
-// changes (branch, tag, push), each held in a band until confirmed. It
-// reaches Claude Code only through `Host`, which register.tsx builds from `$`.
+// selection, unfolding, the diff view, the question for Claude, the three
+// changes (branch, tag, push) held in a band until confirmed, the guard on
+// Claude's git commands, their journal and its undo, and the session view.
+// It reaches Claude Code only through `Host`, which register.tsx builds from `$`.
 
 import {
   type Action,
@@ -12,8 +13,11 @@ import {
   tagAction,
   tagNameError,
 } from '../src/git-actions'
-import { PAGE_SIZE, sshCommand } from '../src/git-commands'
-import { isSafeRefName } from '../src/git-actions'
+import { displayCommand, isSafeRefName } from '../src/git-actions'
+import { headRef, PAGE_SIZE, repoInfo, sshCommand } from '../src/git-commands'
+import { consequences, gitCalls, losesChanges, readStatus, riskOf } from '../src/guard'
+import { appended, describeMoves, journalEntry, type JournalEntry, readRefState, type RefState, undoPlan } from '../src/journal'
+import { loadSessionData, prDescriptionPrompt, type SessionData } from '../src/session'
 import {
   commitKey,
   flatten,
@@ -70,7 +74,23 @@ export type Host = {
     get: () => Promise<readonly string[] | null>
     set: (tips: readonly string[]) => Promise<void>
   }
+  /** Puts a question to the person in Claude Code's own dialog; null when dismissed or nobody can answer. */
+  ask: (question: string, options: readonly string[]) => Promise<string | null>
+  /** The conversation's prompt count. */
+  turns: () => Promise<number>
+  now: () => Promise<number>
+  journal: {
+    get: () => Promise<readonly JournalEntry[] | null>
+    set: (entries: readonly JournalEntry[]) => Promise<void>
+  }
+  /** Where the refs stood when the session started. */
+  start: {
+    get: () => Promise<(RefState & { at: number }) | null>
+    set: (start: RefState & { at: number }) => Promise<void>
+  }
 }
+
+export type SessionMode = { kind: 'session'; data: SessionData | null; error: string | null }
 
 export type DiffMode = {
   kind: 'diff'
@@ -90,6 +110,8 @@ export type Band =
   | { kind: 'tag-form'; commit: Commit; name: string; message: string; error: string | null }
   | { kind: 'running'; action: Action }
   | { kind: 'info'; title: string; lines: string[]; isError: boolean }
+  /** One of Claude's commands, held while the person answers whether it runs. */
+  | { kind: 'guard'; command: string; lines: string[] }
 
 export type Model = {
   snapshot: Snapshot | null
@@ -101,7 +123,7 @@ export type Model = {
   selected: string | null
   /** First list row the window shows. */
   top: number
-  mode: { kind: 'list' } | DiffMode
+  mode: { kind: 'list' } | DiffMode | { kind: 'journal' } | SessionMode
   /** A line shown in place of the header until the next action. */
   notice: string | null
   /** The next Escape returns to the prompt without closing the pane. */
@@ -113,6 +135,8 @@ export type Model = {
   openedFolds: ReadonlySet<string>
   /** All branches, or one ref's history (`f`). */
   scope: LogScope
+  /** Claude's git commands that changed something, newest first. */
+  journal: readonly JournalEntry[]
 }
 
 export const INITIAL: Model = {
@@ -130,6 +154,7 @@ export const INITIAL: Model = {
   isOverview: false,
   openedFolds: new Set(),
   scope: { kind: 'all' },
+  journal: [],
 }
 
 /** Rows from the window's end at which the next page starts loading. */
@@ -140,6 +165,12 @@ export const REFRESH_DEBOUNCE_MS = 150
 const NOTICE_MS = 8000
 const PUSH_TIMEOUT_MS = 120_000
 const WRITE_TIMEOUT_MS = 30_000
+
+/** The two answers the guard offers. */
+export const LET_IT_RUN = 'Laisser passer'
+export const REFUSE = 'Refuser'
+
+const shortCommand = (command: string) => (command.length > 120 ? `${command.slice(0, 119)}…` : command)
 
 export type Controller = ReturnType<typeof createController>
 
@@ -502,6 +533,18 @@ export function createController(host: Host) {
     openBand(null, model.selected ?? undefined)
   }
 
+  /** The repository's top level, read when no snapshot is loaded (the pane closed). */
+  const toplevelOf = async (): Promise<string> => {
+    const repo = repoOf()
+
+    if (repo) return repo.repo.toplevel
+
+    const cwd = await host.cwd()
+    const info = await host.git(repoInfo(), { cwd })
+
+    return info.code === 0 ? info.stdout.split('\n')[0]?.trim() || cwd : cwd
+  }
+
   /** Lets ssh fail rather than prompt, unless the person set their own ssh command. */
   const sshEnv = async (toplevel: string): Promise<Record<string, string>> => {
     if (await host.hasOwnSsh()) {
@@ -673,6 +716,192 @@ export function createController(host: Host) {
       set({ mode: { kind: 'list' }, notice: null })
     },
 
+    /** l: Claude's git commands this session, each one undoable. */
+    openJournal() {
+      set({ mode: { kind: 'journal' }, notice: null, isEscapeKept: false })
+    },
+
+    /** s: what this conversation changed, from where the refs stood when it started. */
+    async openSession() {
+      const mode: SessionMode = { kind: 'session', data: null, error: null }
+
+      set({ mode, notice: null, isEscapeKept: false })
+
+      try {
+        const toplevel = await toplevelOf()
+        const now = await readRefState(host.git, toplevel)
+        let start = await host.start.get()
+
+        if (!now) throw new Error('pas de dépôt git ici')
+
+        if (!start) {
+          start = { ...now, at: await host.now() }
+          await host.start.set(start)
+        }
+
+        const data = await loadSessionData(host.git, toplevel, start, now, repoOf()?.sessionCommits ?? [])
+
+        if (model.mode === mode) set({ mode: { ...mode, data } })
+      } catch (error) {
+        if (model.mode === mode) set({ mode: { ...mode, error: messageOf(error) } })
+      }
+    },
+
+    /** The journal as it was kept, after a reload or at the session's start. */
+    async loadJournal() {
+      model = { ...model, journal: [...((await host.journal.get()) ?? [])] }
+    },
+
+    /** Where every ref stands as the session starts, for the session view. */
+    async recordStart() {
+      if ((await host.start.get()) === null) {
+        const now = await readRefState(host.git, await toplevelOf())
+
+        if (now) await host.start.set({ ...now, at: await host.now() })
+      }
+    },
+
+    /**
+     * Before one of Claude's shell commands runs: when a git command in it
+     * would lose something, the band and Claude Code's question dialog say
+     * what, and the command waits for the person. Resolves the refusal Claude
+     * reads, or, when it runs and throws tracked changes away, their copy.
+     */
+    async guard(command: string): Promise<{ deny?: string; saved?: { hash: string; files: number } }> {
+      const risky = gitCalls(command).flatMap(call => {
+        const risk = riskOf(call)
+
+        return risk ? [{ call, risk }] : []
+      })
+
+      if (risky.length === 0) return {}
+
+      const toplevel = await toplevelOf()
+      const [status, symbolic] = await Promise.all([readStatus(host.git, toplevel), host.git(headRef(), { cwd: toplevel })])
+      const branch = symbolic.code === 0 ? symbolic.stdout.trim().replace(/^refs\/heads\//, '') || null : null
+      const lines: string[] = []
+
+      for (const { call, risk } of risky) {
+        lines.push(
+          ...(call.isElsewhere
+            ? [`dans un autre dépôt (${call.text}) : ce qu’elle perd n’a pas été vérifié`]
+            : await consequences(host.git, risk, { toplevel, status, branch }).catch(() => [`${call.text} : ce qu’elle perd n’a pas pu être vérifié`])),
+        )
+      }
+
+      if (lines.length === 0) return {}
+
+      const shown = shortCommand(risky.map(one => one.call.text).join(' ; '))
+      const held = model.action
+      const question = `Claude veut lancer « ${shown} ». ${lines.join(' ; ')}. Laisser passer ?`
+      let answer: string | null = null
+
+      set({ action: { kind: 'guard', command: shown, lines } })
+
+      try {
+        answer = await host.ask(question.length > 600 ? `${question.slice(0, 590)}… Laisser passer ?` : question, [LET_IT_RUN, REFUSE])
+      } finally {
+        set({ action: held })
+      }
+
+      if (answer !== LET_IT_RUN) {
+        return {
+          deny:
+            `ctree : la personne a refusé « ${shown} », qui aurait perdu : ${lines.join(' ; ')}. ` +
+            'Ne relance pas cette commande telle quelle : demande-lui comment procéder.',
+        }
+      }
+
+      const tracked = status.filter(entry => entry.code !== '?')
+
+      if (risky.some(one => losesChanges(one.risk)) && tracked.length > 0) {
+        const created = await host.write(['stash', 'create'], { cwd: toplevel }).catch(() => null)
+        const hash = created?.code === 0 ? created.stdout.trim() : ''
+
+        if (/^[0-9a-f]{40,64}$/.test(hash)) return { saved: { hash, files: tracked.length } }
+      }
+
+      return {}
+    },
+
+    /** Where the refs stand before one of Claude's git commands; null outside a repository. */
+    async watch(): Promise<RefState | null> {
+      return readRefState(host.git, await toplevelOf()).catch(() => null)
+    },
+
+    /** After it: a journal entry when it moved refs or threw changes away. */
+    async record(command: string, before: RefState, input: { saved?: { hash: string; files: number }; isSubagent: boolean }) {
+      const after = await readRefState(host.git, await toplevelOf()).catch(() => null)
+
+      if (!after) return
+
+      const entry = journalEntry({
+        at: await host.now(),
+        turn: await host.turns().catch(() => 0),
+        command,
+        isSubagent: input.isSubagent,
+        before,
+        after,
+        ...(input.saved ? { saved: input.saved } : {}),
+      })
+
+      if (!entry) return
+
+      const journal = appended(model.journal, entry)
+
+      set({ journal })
+      await host.journal.set(journal)
+    },
+
+    /** u: undo a journal entry (the latest not undone when none is named), confirmed first. */
+    async beginUndo(id?: string) {
+      const entry = id ? model.journal.find(one => one.id === id) : model.journal.find(one => !one.isUndone)
+
+      if (!entry) return showNotice('Rien à annuler : Claude n’a encore rien changé avec git', false)
+      if (entry.isUndone) return showNotice('Déjà annulé', false)
+
+      const now = await readRefState(host.git, await toplevelOf())
+
+      if (!now) return
+
+      const plan = undoPlan(entry, now)
+      const command = shortCommand(entry.command)
+      const title = `⟲ Annuler « ${command} » (tour ${entry.turn})`
+      const what = describeMoves(entry).join(', ')
+      const note = (extra: string) =>
+        `[ctree] Via le panneau, la personne a annulé ta commande « ${command} » (tour ${entry.turn}) : ${what}${extra}. ` +
+        'Le dépôt est revenu à l’état d’avant cette commande.'
+      const base = { kind: 'undo' as const, title, confirm: 'défaire', undoes: entry.id }
+      const actions: Action[] = []
+      const [first, ...rest] = plan.steps
+
+      if (first) {
+        actions.push({ ...base, args: first, then: rest, details: plan.notes, success: '✓ Annulé', note: note('') })
+      }
+
+      if (plan.restore) {
+        const [head, ...tail] = [...plan.steps, plan.restore]
+
+        actions.push({
+          ...base,
+          title: first ? `${title}, fichiers compris` : `⟲ Récupérer les fichiers jetés par « ${command} »`,
+          args: head ?? plan.restore,
+          then: tail,
+          details: [`récupère ${entry.savedFiles ?? 0} fichier(s) modifié(s) jeté(s) (git stash apply)`, ...plan.notes],
+          success: '✓ Annulé, fichiers récupérés',
+          note: note(', et les fichiers modifiés jetés sont revenus'),
+        })
+      }
+
+      const [only] = actions
+
+      if (!only) {
+        return openBand({ kind: 'info', title, lines: plan.notes.length ? plan.notes : ['plus rien à remettre'], isError: false }, 'act-n')
+      }
+
+      openBand(actions.length === 1 ? { kind: 'confirm', action: only } : { kind: 'choose', title, actions }, 'act-n')
+    },
+
     /** q: closes the pane. Our own close raises no hook of ours, so say it here. */
     async close() {
       await host.close()
@@ -687,7 +916,10 @@ export function createController(host: Host) {
         return
       }
 
-      const text = promptFor(model, repo.commits, itemsOf(), repo.status.length)
+      const text =
+        model.mode.kind === 'session'
+          ? model.mode.data && prDescriptionPrompt(model.mode.data)
+          : promptFor(model, repo.commits, itemsOf(), repo.status.length)
 
       if (text === null) {
         return
@@ -834,11 +1066,25 @@ export function createController(host: Host) {
         const toplevel = repo.repo.toplevel
         const env = action.kind === 'push' ? await sshEnv(toplevel) : {}
         const timeoutMs = action.kind === 'push' ? PUSH_TIMEOUT_MS : WRITE_TIMEOUT_MS
-        const result = await host.write(action.args, { cwd: toplevel, env, timeoutMs })
+        const steps = [action.args, ...(action.then ?? [])]
 
-        if (result.code !== 0) {
-          openBand({ kind: 'info', title: `✗ ${action.title}`, lines: errorLines(result), isError: true }, 'act-n')
-          return
+        for (const [i, args] of steps.entries()) {
+          const result = await host.write(args, { cwd: toplevel, env, timeoutMs })
+
+          if (result.code !== 0) {
+            const done = i > 0 ? [`${i} étape${i > 1 ? 's' : ''} sur ${steps.length} faite${i > 1 ? 's' : ''} avant : ${displayCommand(args)} a échoué`] : []
+
+            openBand({ kind: 'info', title: `✗ ${action.title}`, lines: [...errorLines(result), ...done], isError: true }, 'act-n')
+            await refresh('all')
+            return
+          }
+        }
+
+        if (action.undoes) {
+          const journal = model.journal.map(entry => (entry.id === action.undoes ? { ...entry, isUndone: true as const } : entry))
+
+          model = { ...model, journal }
+          await host.journal.set(journal)
         }
 
         closeBand()
@@ -852,7 +1098,7 @@ export function createController(host: Host) {
 
     /** n: the band goes, nothing ran. */
     cancelAction() {
-      if (model.action && model.action.kind !== 'running') {
+      if (model.action && model.action.kind !== 'running' && model.action.kind !== 'guard') {
         closeBand()
       }
     },
@@ -860,14 +1106,14 @@ export function createController(host: Host) {
     /** Escape was pressed: whether it closes the pane, or is spent on going back. */
     escape(): 'close' | 'back' | 'keep' {
       if (model.action) {
-        if (model.action.kind !== 'running') {
+        if (model.action.kind !== 'running' && model.action.kind !== 'guard') {
           closeBand()
         }
 
         return 'back'
       }
 
-      if (model.mode.kind === 'diff') {
+      if (model.mode.kind !== 'list') {
         set({ mode: { kind: 'list' } })
         return 'back'
       }

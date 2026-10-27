@@ -9,9 +9,11 @@ import type { Commit, GitRunner, RepoSnapshot } from './types'
 
 /** A change ready to confirm: what runs, and what the pane and Claude are told. */
 export type Action = {
-  kind: 'switch' | 'tag' | 'push'
+  kind: 'switch' | 'tag' | 'push' | 'undo'
   /** The arguments after `git`. */
   args: string[]
+  /** Further commands run in order once `args` succeeded; the first failure stops them. */
+  then?: string[][]
   title: string
   details: string[]
   /** The word on the confirm key. */
@@ -20,6 +22,8 @@ export type Action = {
   success: string
   /** Appended to the conversation for Claude once it ran. */
   note: string
+  /** The journal entry it undoes. */
+  undoes?: string
 }
 
 export type SwitchTarget =
@@ -228,17 +232,33 @@ export async function planPush(
   }
 }
 
+const ZERO = '0'.repeat(40)
+const isLocalRef = (ref: string) => /^refs\/(heads|tags)\//.test(ref) && isSafeRefName(ref)
+
 /**
- * Whether `args` (after `git`) is one of the writes this module builds:
- * `switch <branch>`, `switch --track <remote>/<branch>`, `switch --detach
- * <hash>`, `tag -a <name> -m <message> <hash>`, `push --follow-tags [-u]
- * <remote> <branch>[:refs/heads/<branch>]`. Nothing forced, nothing deleted.
+ * Whether `args` (after `git`) is one of the writes this module and the
+ * journal build: `switch <branch>`, `switch --track <remote>/<branch>`,
+ * `switch --detach <hash>`, `tag -a <name> -m <message> <hash>`, `push
+ * --follow-tags [-u] <remote> <branch>[:refs/heads/<branch>]`; to undo,
+ * `update-ref <local ref> <hash> <hash|zero>`, `update-ref -d <local ref>
+ * <hash>`, `reset --keep|--soft <hash>`, `stash apply <hash>`; to save
+ * changes before a command throws them away, `stash create`. Nothing forced,
+ * no remote ref touched, every change checked against where the ref stands.
  */
 export function isAllowedWrite(args: readonly string[]): boolean {
   const [command, ...rest] = args
   const [a = '', b = '', c = '', d = '', e = ''] = rest
 
   switch (command) {
+    case 'update-ref':
+      return (
+        (rest.length === 3 && isLocalRef(a) && HEX.test(b) && b !== ZERO && (HEX.test(c) || c === ZERO)) ||
+        (rest.length === 3 && a === '-d' && isLocalRef(b) && HEX.test(c))
+      )
+    case 'reset':
+      return rest.length === 2 && (a === '--keep' || a === '--soft') && HEX.test(b)
+    case 'stash':
+      return (rest.length === 1 && a === 'create') || (rest.length === 2 && a === 'apply' && HEX.test(b))
     case 'switch':
       return (
         (rest.length === 1 && isSafeRefName(a)) ||

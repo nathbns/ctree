@@ -40,8 +40,11 @@ Puis `/ctree` au prompt.
 | `c` | change de branche : celle du commit sélectionné (au choix s'il en porte plusieurs) |
 | `t` | crée un tag annoté sur le commit sélectionné |
 | `p` | pousse la branche courante |
+| `u` | annule la dernière commande git de Claude (après confirmation) |
+| `l` | journal des commandes git de Claude ; Entrée sur une entrée l'annule |
+| `s` | vue session : ce que cette conversation a changé ; `e` y demande une description de PR |
 | `r` | recharge le dépôt |
-| `q` | ferme le panneau ; dans la vue diff, revient à la liste |
+| `q` | ferme le panneau ; dans la vue diff, le journal ou la session, revient à la liste |
 | `Échap` | ferme le panneau ; annule une action en attente ; dans la vue diff, revient à la liste ; juste après `e`, rend la main au prompt sans fermer |
 
 La molette et Page↑/Page↓ font défiler la liste. Dans VS Code, il n'y a pas de raccourcis clavier : on clique sur les lignes et les boutons.
@@ -103,6 +106,54 @@ Après chaque action réussie, le graphe se recharge. Une note est ajoutée à l
 
 À savoir : les commandes passent par l'API des mods, qui lance git avec les hooks du dépôt désactivés. Un `pre-push` ou un `post-checkout` ne tournent donc pas pour ces actions. Pour ssh, git ne pose aucune question (`BatchMode`) : il échoue avec un message plutôt que de bloquer, sauf si tu as réglé ta propre commande ssh.
 
+## Garde-fou, journal et annulation
+
+Ce que ctree peut faire, et que les outils hors de la session ne peuvent pas : il voit chaque commande git de Claude **avant** qu'elle parte.
+
+**Le garde-fou.** Quand une commande de Claude perdrait du travail, elle attend ta réponse, même en mode auto. La question de Claude Code dit précisément ce qui partirait :
+
+```
+Claude veut lancer « git reset --hard HEAD~2 ». 2 commits (1c6f1b0 test: … · 0dee2c5 docs: …)
+ne seront plus sur aucune branche ; 3 fichiers modifiés perdus : src/a.ts, src/b.ts, README.md.
+Laisser passer ?
+```
+
+| Commande | Ce qui est calculé avant |
+| --- | --- |
+| `reset --hard` | les commits qui ne seront plus sur aucune branche, les fichiers modifiés perdus |
+| `checkout -- …`, `checkout .`, `restore`, `switch -f` / `--discard-changes` | les fichiers modifiés perdus |
+| `clean -f` | les fichiers non suivis supprimés (via `git clean -n`), sans copie possible |
+| `stash drop` / `clear` | les stashs perdus |
+| `push --force` / `+refspec`, `push --delete` / `:branche` | les commits que la branche distante perdrait |
+| `branch -D` | les commits qui n'existent que sur cette branche |
+| `filter-branch`, `gc --prune=now`, `reflog expire`, `update-ref -d` | un avertissement |
+
+- **Si tu refuses**, la commande ne part pas. Claude lit pourquoi et te demande comment procéder.
+- **Si tu laisses passer** une commande qui jette des fichiers modifiés, ctree en garde d'abord une copie (`git stash create`, sans toucher à rien), récupérable depuis le journal.
+- **Les commandes qui ne perdent rien** (commit, rebase, merge, push normal…) ne sont jamais retenues : elles passent par le journal.
+- **Une commande lancée avec `git -C ailleurs`** est retenue avec un avertissement, sans calcul.
+- **Pour couper le garde-fou** : l'option `guard` (`pluginConfigs` → `ctree@inline` → `guard: false` avec `--plugin-dir`). Le garde-fou ne s'applique pas sans personne pour répondre (`claude -p`).
+- **En mode par défaut**, Claude Code peut encore demander sa propre permission après ta réponse.
+
+**Le journal (`l`).** Chaque commande git de Claude qui déplace une branche, un tag ou HEAD, ou qui jette des changements, y est inscrite : tour de conversation, commande, ce qui a bougé (`main a2e6115 → 8282214`).
+
+**Annuler (`u`, ou Entrée dans le journal).** La confirmation montre les commandes exactes, puis :
+- une branche créée est supprimée, une branche supprimée est refaite, HEAD revient sur sa branche d'avant ;
+- après un commit (ou `add` + `commit`, un amend), la branche revient avec `reset --soft` : les changements redeviennent non commités, comme avant ;
+- après un `reset --hard`, un merge ou un rebase, elle revient avec `reset --keep` : les fichiers sont remis, et git refuse s'il écraserait des changements locaux ;
+- si des fichiers modifiés avaient été jetés, une deuxième option les récupère aussi (`git stash apply`) ;
+- une branche qui a bougé depuis est laissée telle quelle, avec une note ;
+- un push n'est jamais annulé, car il faudrait un push forcé.
+
+Claude reçoit une note : il sait que sa commande a été défaite.
+
+**La vue session (`s`).** Ce que la conversation a changé depuis son début :
+- les branches et tags créés, supprimés ou déplacés, avec `+n −m` commits ;
+- les commits `✦` ;
+- les fichiers changés par HEAD, avec `+/−`.
+
+`e` y prépare la demande d'une description de pull request.
+
 ## Rafraîchissement
 
 - Après une commande Bash de Claude qui contient `git`, tout le graphe est rechargé.
@@ -115,7 +166,14 @@ Après chaque action réussie, le graphe se recharge. Une note est ajoutée à l
 Le mod lance git sans shell, en passant les arguments directement (`$.process.run`).
 
 - Les lectures passent par une liste blanche (`src/git-commands.ts`, `isReadOnly`).
-- Les écritures passent par une garde à part (`src/git-actions.ts`, `isAllowedWrite`). Elle n'admet que les cinq formes construites par les trois actions : `switch <branche>`, `switch --track`, `switch --detach <hash>`, `tag -a … <hash>`, `push --follow-tags [-u] <distant> <branche>`. Elle refuse tout le reste : `--force`, refspec `+…` ou `:…`, `--delete`, `tag -d`, `reset`, etc. Ces écritures ne partent qu'après `y`.
+- Les écritures passent par une garde à part (`src/git-actions.ts`, `isAllowedWrite`). Elle n'admet que les formes construites par les actions et par l'annulation :
+  - `switch <branche>`, `switch --track`, `switch --detach <hash>` ;
+  - `tag -a … <hash>` ;
+  - `push --follow-tags [-u] <distant> <branche>` ;
+  - `update-ref` d'une branche ou d'un tag local, vérifié contre sa valeur actuelle ;
+  - `reset --keep|--soft <hash>`, `stash apply <hash>`, et `stash create` (la copie de sauvegarde).
+
+  Elle refuse tout le reste : `--force`, refspec `+…` ou `:…`, `--delete`, `tag -d`, `reset --hard`, toute référence distante, etc. Ces écritures ne partent qu'après `y`, sauf `stash create`, qui ne modifie ni les fichiers ni les branches.
 - Chaque appel passe aussi `--no-optional-locks`, `-c core.fsmonitor=false` et `-c log.showSignature=false` ; les diffs passent `--no-ext-diff --no-textconv`. Un dépôt ne peut donc ni écrire son index ni lancer un programme configuré.
 
 ## Structure
@@ -123,7 +181,8 @@ Le mod lance git sans shell, en passant les arguments directement (`$.process.ru
 ```
 src/      cœur pur, sans dépendance à Claude Code : commandes git, parsing,
           calcul des lanes, couleurs, étiquettes, mise en page, lignes,
-          vue d'ensemble (repliement), actions (branche, tag, push) et leur garde
+          vue d'ensemble (repliement), actions (branche, tag, push) et leur garde,
+          garde-fou (guard.ts), journal et annulation (journal.ts), vue session
 hooks/    le mod : register.tsx (hooks), controller.ts (état), view.tsx (rendu)
 types/    contrat $.state (l'état des refs au début de la session, pour ✦)
 tests/    lanes, parsing, étiquettes et couleurs, lignes, vue d'ensemble, actions, contrôleur,
@@ -135,7 +194,7 @@ tests/    lanes, parsing, étiquettes et couleurs, lignes, vue d'ensemble, actio
 Depuis le dossier du dépôt :
 
 ```sh
-claude plugin test .         # 110 tests
+claude plugin test .         # 172 tests
 claude plugin validate .
 npx -p typescript tsc -p .   # après un premier lancement avec --plugin-dir,
                              # qui dépose les types dans .claude-plugin/types/

@@ -1,17 +1,23 @@
 // ctree: the repository's commit graph in a pane beside the conversation.
-// /ctree opens it; it follows the git commands Claude runs. It reads git,
-// and writes only the three changes the person confirms (branch, tag, push).
+// /ctree opens it; it follows the git commands Claude runs. It reads git, and
+// writes only what the person confirms: a branch, a tag, a push, an undo.
+// Claude's git commands that would lose work wait for the person's answer,
+// and those that change refs go in a journal that can undo them.
 
 import type { EngineInterface, Register } from 'claude-code'
 
 import { isAllowedWrite } from '../src/git-actions'
 import { GIT_ENV, isReadOnly, READ_FLAGS } from '../src/git-commands'
+import { gitCalls, riskOf } from '../src/guard'
+import type { RefState } from '../src/journal'
 import type { GitOptions } from '../src/types'
 import { createController, type Controller, type Host } from './controller'
 import { paneTree } from './view'
 
 const PANE_ID = 'ctree'
 const BASELINE = { plugin: 'ctree', key: 'baseline' } as const
+const START = { plugin: 'ctree', key: 'start' } as const
+const JOURNAL = { plugin: 'ctree', key: 'journal' } as const
 const GIT_TIMEOUT_MS = 20_000
 
 /** A docked pane is at most this share of the terminal's width; ctree asks for all of it. */
@@ -89,11 +95,36 @@ function hostOf($: EngineInterface): Host {
         await $.state.set(BASELINE, [...tips])
       },
     },
+    ask: async (question, options) => {
+      try {
+        return await $.ui.ask(question, { options: [...options], header: 'ctree' })
+      } catch {
+        // Dismissed, or nobody to ask: the guard reads it as a refusal.
+        return null
+      }
+    },
+    turns: () => $.session.turns(),
+    now: () => $.clock.now(),
+    journal: {
+      get: async () => (await $.state.get(JOURNAL)).value ?? null,
+      set: async entries => {
+        await $.state.set(JOURNAL, [...entries])
+      },
+    },
+    start: {
+      get: async () => (await $.state.get(START)).value ?? null,
+      set: async start => {
+        await $.state.set(START, start)
+      },
+    },
   }
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
   let ctl: Controller | null = null
+  // The guard asks a person: on unless turned off, and only where someone can answer.
+  const isGuardOn = options?.guard !== false
+  let isGuarded = false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -103,8 +134,12 @@ export const register: Register = on => {
     })
 
     ctl = createController(hostOf($))
-    // The commits the refs point at now: what the session did is drawn ✦.
+    isGuarded = isGuardOn && e.isInteractive !== false
+    // The commits the refs point at now: what the session did is drawn ✦,
+    // and the session view counts from there.
     void ctl.recordBaseline().catch(() => undefined)
+    void ctl.recordStart().catch(() => undefined)
+    void ctl.loadJournal().catch(() => undefined)
 
     return next(e)
   })
@@ -190,15 +225,39 @@ export const register: Register = on => {
     return {}
   }).catch(($, e, next) => next(e))
 
-  // After a git command the whole graph reloads; after any other change to
-  // the files, only the count of uncommitted changes.
+  // Claude's commands. A git command that would lose work waits for the
+  // person (the guard); one that changes refs goes in the journal. Then the
+  // pane reloads: the whole graph after git, the status after other changes.
   on('tool.call', { tool: ['Bash', 'Edit', 'Write', 'NotebookEdit'] }, async ($, e, next) => {
+    const command = 'command' in e && typeof e.command === 'string' ? e.command : null
+    const isGit = command !== null && /\bgit\b/.test(command)
+    let saved: { hash: string; files: number } | undefined
+    let before: RefState | null = null
+
+    if (ctl && isGit && command) {
+      if (isGuarded) {
+        const verdict = await ctl.guard(command)
+
+        if (verdict.deny) {
+          return { deny: verdict.deny }
+        }
+
+        saved = verdict.saved
+      }
+
+      before = await ctl.watch()
+    }
+
     const result = await next(e)
 
-    if (ctl?.isOpen && result.deny === undefined) {
-      const command = 'command' in e && typeof e.command === 'string' ? e.command : null
+    if (ctl && before && command && result.deny === undefined) {
+      const isSubagent = 'agentId' in e && Boolean(e.agentId)
 
-      if (command !== null && /\bgit\b/.test(command)) {
+      await ctl.record(command, before, { isSubagent, ...(saved ? { saved } : {}) }).catch(() => undefined)
+    }
+
+    if (ctl?.isOpen && result.deny === undefined) {
+      if (isGit) {
         ctl.schedule('all')
       } else if (result.isReadOnly !== true) {
         ctl.schedule('status')
@@ -206,5 +265,18 @@ export const register: Register = on => {
     }
 
     return result
-  }).catch(($, e, next) => next(e))
+  }).catch(($, e, next) => {
+    if (next.called) {
+      return next(e)
+    }
+
+    // The guard failed before it could ask: a command it would have held does
+    // not run unchecked; any other goes on.
+    const command = 'command' in e && typeof e.command === 'string' ? e.command : ''
+    const isRisky = isGuarded && gitCalls(command).some(call => riskOf(call) !== null)
+
+    return isRisky
+      ? { deny: 'ctree n’a pas pu vérifier ce que cette commande git perdrait : elle n’a pas été lancée. Demande à la personne avant de réessayer.' }
+      : next(e)
+  })
 }

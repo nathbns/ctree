@@ -63,6 +63,16 @@ export const refsOf = (snapshot: RepoSnapshot): string =>
     })
     .join('\n') + '\n'
 
+/** The refs as `git for-each-ref --format=%(refname)%1f%(objectname)` prints them. */
+export const refStateOf = (snapshot: RepoSnapshot): string =>
+  snapshot.refs
+    .map(ref => {
+      const full = ref.kind === 'branch' ? `refs/heads/${ref.name}` : ref.kind === 'remote' ? `refs/remotes/${ref.name}` : `refs/tags/${ref.name}`
+
+      return `${full}${F}${ref.target}`
+    })
+    .join('\n') + '\n'
+
 export const DIFF = 'diff --git a/lanes.txt b/lanes.txt\nnew file mode 100644\n--- /dev/null\n+++ b/lanes.txt\n@@ -0,0 +1,2 @@\n+Tests du calcul des lanes\n+Calcul des lanes : octopus merge\n'
 
 export type Answer = { exitCode: number; stdout: string; stderr?: string }
@@ -89,7 +99,11 @@ export function demoGit(args: readonly string[]): Answer {
     case 'tag':
       return { exitCode: 0, stdout: 'v0.1.0\x1ftag\nv0.2.0\x1fcommit\n' }
     case 'for-each-ref':
-      return { exitCode: 0, stdout: refsOf(SNAPSHOT) }
+      return rest.includes('--format=%(refname)%1f%(objectname)')
+        ? { exitCode: 0, stdout: refStateOf(SNAPSHOT) }
+        : { exitCode: 0, stdout: refsOf(SNAPSHOT) }
+    case 'stash':
+      return { exitCode: 0, stdout: '' }
     case 'status':
       return { exitCode: 0, stdout: ' M a.txt\0?? untracked.txt\0' }
     case 'worktree':

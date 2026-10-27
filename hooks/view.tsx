@@ -1,6 +1,7 @@
 // The pane's tree: the list (header, pinned uncommitted row, the window of
 // commits and files, the keys or the band of a change waiting for its
-// confirmation), the diff view, and the states with no graph.
+// confirmation, or of Claude's command the guard holds), the diff view, the
+// journal of Claude's git commands, the session view, and the states with no graph.
 
 import type { Elements, RenderElement } from 'claude-code'
 
@@ -18,8 +19,9 @@ import {
   wipLine,
   WIP,
 } from '../src/rows'
-import { shortHash, statusLetter } from '../src/format'
-import type { Band, Controller, DiffMode } from './controller'
+import { counts, relativeDate, shortHash, statusLetter } from '../src/format'
+import { describeMoves } from '../src/journal'
+import type { Band, Controller, DiffMode, SessionMode } from './controller'
 
 /** The elements drawn with; `Input` is absent where the surface has none (mobile). */
 export type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Code'> &
@@ -38,11 +40,13 @@ export type Frame = {
 /** The list's keys, long while they fit on one row, else short. */
 const LONG_KEYS: readonly (readonly [string, string])[] = [
   ['j', '↓'], ['k', '↑'], ['⏎', 'ouvrir'], ['v', 'vue'], ['f', 'focus'], ['e', 'expliquer'],
-  ['c', 'branche'], ['t', 'tag'], ['p', 'push'], ['r', 'maj'], ['q', 'fermer'],
+  ['c', 'branche'], ['t', 'tag'], ['p', 'push'], ['u', 'annuler'], ['l', 'journal'], ['s', 'session'],
+  ['r', 'maj'], ['q', 'fermer'],
 ]
 const SHORT_KEYS: readonly (readonly [string, string])[] = [
   ['j', '↓'], ['k', '↑'], ['⏎', ''], ['v', 'vue'], ['f', 'focus'], ['e', 'expl.'],
-  ['c', 'br.'], ['t', 'tag'], ['p', 'push'], ['r', 'maj'], ['q', '✕'],
+  ['c', 'br.'], ['t', 'tag'], ['p', 'push'], ['u', '⟲'], ['l', 'journal'], ['s', 'session'],
+  ['r', 'maj'], ['q', '✕'],
 ]
 
 const keysWidth = (keys: readonly (readonly [string, string])[], gap: number) =>
@@ -50,7 +54,7 @@ const keysWidth = (keys: readonly (readonly [string, string])[], gap: number) =>
   gap * (keys.length - 1)
 
 /** Rows the keys take: one, or two once even the short ones wrap. */
-const keyRows = (width: number) => (keysWidth(SHORT_KEYS, 1) <= width ? 1 : 2)
+const keyRows = (width: number) => Math.max(1, Math.ceil(keysWidth(SHORT_KEYS, 1) / Math.max(1, width)))
 
 /** Rows a band takes, so the window of rows above it keeps the pane's height. */
 function bandRows(band: Band): number {
@@ -66,6 +70,8 @@ function bandRows(band: Band): number {
       return 4
     case 'info':
       return 2 + band.lines.length
+    case 'guard':
+      return 2 + band.lines.length
   }
 }
 
@@ -76,6 +82,14 @@ export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
 
   if (ctl.model.mode.kind === 'diff') {
     return diffTree(ui, ctl, ctl.model.mode, width)
+  }
+
+  if (ctl.model.mode.kind === 'journal') {
+    return journalTree(ui, ctl, width, frame.now)
+  }
+
+  if (ctl.model.mode.kind === 'session') {
+    return sessionTree(ui, ctl, ctl.model.mode, width, frame.now)
   }
 
   if (snapshot === null) {
@@ -267,7 +281,99 @@ function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderEle
           <Box flexDirection="row" columnGap={2}>{cancel('fermer')}</Box>
         </Box>
       )
+    case 'guard':
+      return (
+        <Box flexDirection="column">
+          <Text bold color="warning">{line(`⚠ Claude veut lancer « ${band.command} »`)}</Text>
+          {band.lines.map(text => (
+            <Text>{line(`  ${text}`)}</Text>
+          ))}
+          <Text dimColor>{line('  Réponds dans la question de Claude Code.')}</Text>
+        </Box>
+      )
   }
+}
+
+/** Claude's git commands this session, newest first: Enter on one undoes it. */
+function journalTree(ui: Ui, ctl: Controller, width: number, now: number): RenderElement {
+  const { Box, Button, Text } = ui
+  const journal = ctl.model.journal
+  const band = ctl.model.action
+  const line = (text: string) => truncate(text, width)
+
+  return (
+    <Box flexDirection="column">
+      <Text bold>{line(`⟲ Journal des commandes git de Claude · ${journal.length}`)}</Text>
+      {journal.length === 0 && <Text dimColor>{line('  Claude n’a encore rien changé avec git dans cette session.')}</Text>}
+      {journal.map((entry, i) => {
+        const when = relativeDate(Math.floor(entry.at / 1000), now)
+        const who = entry.isSubagent ? ' · sous-agent' : ''
+        const label = line(`tour ${entry.turn} · ${entry.command}${who}${entry.isUndone ? ' · annulé' : ''} · ${when}`)
+
+        return (
+          <Box flexDirection="column">
+            <Button
+              key={`journal-${entry.id}`}
+              plain
+              {...(i === 0 && !band ? { autoFocus: true as const } : {})}
+              {...(entry.isUndone ? { dimColor: true } : {})}
+              onPress={() => void ctl.beginUndo(entry.id)}
+            >
+              {label}
+            </Button>
+            <Text dimColor>{line(`    ${describeMoves(entry).join(' · ') || 'rien de changé'}`)}</Text>
+          </Box>
+        )
+      })}
+      {band ? bandTree(ui, ctl, band, width) : keys(ui, ctl, width, 'journal')}
+    </Box>
+  )
+}
+
+/** What this conversation changed: refs, commits, files. Long, it scrolls. */
+function sessionTree(ui: Ui, ctl: Controller, mode: SessionMode, width: number, now: number): RenderElement {
+  const { Box, Text } = ui
+  const line = (text: string) => truncate(text, width)
+  const data = mode.data
+
+  const body = (() => {
+    if (mode.error) return [<Text color="error">{line(`  ${mode.error}`)}</Text>]
+    if (!data) return [<Text dimColor>{line('  Lecture de la session…')}</Text>]
+
+    const changes = data.refs.map(ref => {
+      const what =
+        ref.change === 'new'
+          ? `nouvelle (${shortHash(ref.after ?? '')})`
+          : ref.change === 'deleted'
+            ? `supprimée (était ${shortHash(ref.before ?? '')})`
+            : `${shortHash(ref.before ?? '')} → ${shortHash(ref.after ?? '')}${ref.gained !== undefined ? `  +${ref.gained} −${ref.lost ?? 0}` : ''}`
+
+      return <Text>{line(`    ${ref.name.padEnd(22)} ${what}`)}</Text>
+    })
+    const added = data.files.reduce((sum, file) => sum + (file.added ?? 0), 0)
+    const deleted = data.files.reduce((sum, file) => sum + (file.deleted ?? 0), 0)
+
+    return [
+      <Text bold>{line(`  Branches et tags · ${data.refs.length}`)}</Text>,
+      ...(changes.length ? changes : [<Text dimColor>{line('    rien n’a bougé')}</Text>]),
+      <Text bold>{line(`  Commits ✦ · ${data.commits.length}`)}</Text>,
+      ...(data.commits.length
+        ? data.commits.slice(0, 20).map(commit => <Text>{line(`    ${shortHash(commit.hash)} ${commit.subject}`)}</Text>)
+        : [<Text dimColor>{line('    aucun')}</Text>]),
+      <Text bold>{line(`  Fichiers changés par HEAD · ${data.files.length}${data.files.length ? ` · +${added} −${deleted}` : ''}`)}</Text>,
+      ...(data.files.length
+        ? data.files.slice(0, 30).map(file => <Text>{line(`    ${statusLetter(file.status)} ${file.path}  ${counts(file.added, file.deleted)}`)}</Text>)
+        : [<Text dimColor>{line('    aucun')}</Text>]),
+    ]
+  })()
+
+  return (
+    <Box flexDirection="column">
+      {keys(ui, ctl, width, 'session')}
+      <Text bold color="claude">{line(`✦ Cette session${data ? ` · depuis ${relativeDate(Math.floor(data.since / 1000), now)}` : ''}`)}</Text>
+      {body}
+    </Box>
+  )
 }
 
 function diffTree(ui: Ui, ctl: Controller, mode: DiffMode, width: number): RenderElement {
@@ -340,7 +446,7 @@ function row(ui: Ui, key: string, line: Segment[], isStart: boolean, onPress: ()
 }
 
 /** The keys, drawn as the Buttons their hotkeys press, wide or narrow. */
-function keys(ui: Ui, ctl: Controller, width: number, where: 'list' | 'diff' | 'message'): RenderElement {
+function keys(ui: Ui, ctl: Controller, width: number, where: 'list' | 'diff' | 'message' | 'journal' | 'session'): RenderElement {
   const { Box, Button, Text } = ui
   const key = (hotkey: string, label: string, onPress: () => void) => (
     <Button key={`key-${hotkey}`} plain hotkey={hotkey} label={label} dimColor onPress={onPress} />
@@ -351,6 +457,26 @@ function keys(ui: Ui, ctl: Controller, width: number, where: 'list' | 'diff' | '
       <Box flexDirection="row" columnGap={2}>
         {key('q', 'retour', () => ctl.back())}
         {key('e', 'expliquer', () => void ctl.explain())}
+        <Text dimColor>↑↓ défiler</Text>
+      </Box>
+    )
+  }
+
+  if (where === 'journal') {
+    return (
+      <Box flexDirection="row" columnGap={2}>
+        <Text dimColor>⏎ annuler celle-ci</Text>
+        {key('u', 'annuler la dernière', () => void ctl.beginUndo())}
+        {key('q', 'retour', () => ctl.back())}
+      </Box>
+    )
+  }
+
+  if (where === 'session') {
+    return (
+      <Box flexDirection="row" columnGap={2}>
+        {key('e', 'description de PR', () => void ctl.explain())}
+        {key('q', 'retour', () => ctl.back())}
         <Text dimColor>↑↓ défiler</Text>
       </Box>
     )
@@ -381,6 +507,9 @@ function keys(ui: Ui, ctl: Controller, width: number, where: 'list' | 'diff' | '
       {key('c', label('c'), () => ctl.beginSwitch())}
       {key('t', label('t'), () => ctl.beginTag())}
       {key('p', label('p'), () => void ctl.beginPush())}
+      {key('u', label('u'), () => void ctl.beginUndo())}
+      {key('l', label('l'), () => ctl.openJournal())}
+      {key('s', label('s'), () => void ctl.openSession())}
       {key('r', label('r'), () => void ctl.refresh())}
       {key('q', label('q'), () => void ctl.close())}
     </Box>

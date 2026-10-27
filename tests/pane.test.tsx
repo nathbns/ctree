@@ -43,6 +43,7 @@ function world(on: On, script: Script = () => undefined) {
 
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/work/demo' }))
+  on('session.turns', () => ({ value: 3 }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', ($, e) => {
     opened.push(e)
@@ -391,6 +392,141 @@ describe('seeing the whole graph (V3)', () => {
     expect(await ui.find({ type: 'Text', text: /◎ main/ })).toBeDefined()
     expect(w.runs.some(args => args.includes('refs/heads/main'))).toBe(true)
     await ui.unmount()
+  })
+})
+
+describe('the guard and the journal (V3, lot C)', () => {
+  /** The person's answer in Claude Code's question dialog, and the questions asked. */
+  const answering = (on: On, answer: string) => {
+    const asked: string[] = []
+
+    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+      const question = e.questions[0]?.question ?? ''
+
+      asked.push(question)
+
+      return { result: { questions: e.questions, answers: { [question]: answer } } }
+    })
+
+    return asked
+  }
+
+  /** The demo's refs as a state the Bash stub can move, as a git command would. */
+  const movable = () => {
+    const refs: Record<string, string> = { 'refs/heads/main': h('3'), 'refs/heads/feature/ui': h('1'), 'refs/remotes/origin/main': h('3') }
+    const script: Script = args =>
+      args[0] === 'for-each-ref' && args.includes('--format=%(refname)%1f%(objectname)')
+        ? { exitCode: 0, stdout: Object.entries(refs).map(([ref, hash]) => `${ref}\x1f${hash}`).join('\n') + '\n' }
+        : args[0] === 'rev-parse' && args.includes('--verify') && !args.some(arg => arg.includes('~'))
+          ? { exitCode: 0, stdout: `${refs['refs/heads/main']}\n` }
+          : undefined
+
+    return { refs, script }
+  }
+
+  test('Claude’s reset --hard waits for the person; refused, it never runs and Claude reads why', async ($, on) => {
+    const w = world(on)
+    const asked = answering(on, 'Refuser')
+    const ran: string[] = []
+
+    on('tool.call', { tool: 'Bash' }, ($, e) => {
+      ran.push(e.command)
+
+      return { result: {} }
+    })
+    await openPane($, w)
+
+    const result = await $.tool.call({ tool: 'Bash', command: 'git reset --hard HEAD~1' })
+
+    expect(asked[0]).toContain('Claude veut lancer « git reset --hard HEAD~1 »')
+    expect(asked[0]).toContain('1 fichier modifié perdu : a.txt')
+    expect(ran).toEqual([])
+    expect(JSON.stringify(result)).toContain('la personne a refusé')
+  })
+
+  test('let through, it runs and goes in the journal; l lists it, Enter undoes it once confirmed', async ($, on) => {
+    const { refs, script } = movable()
+    const w = world(on, script)
+
+    answering(on, 'Laisser passer')
+    on('tool.call', { tool: 'Bash' }, () => {
+      // What the reset does to the refs.
+      refs['refs/heads/main'] = h('6')
+
+      return { result: {} }
+    })
+    await openPane($, w)
+    await $.tool.call({ tool: 'Bash', command: 'git reset --hard HEAD~1' })
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    await ui.press({ key: 'key-l' })
+
+    const entry = (await ui.findAll({ type: 'Button' })).find(button => button.key?.startsWith('journal-'))
+
+    expect(entry?.text).toContain('tour 3 · git reset --hard HEAD~1')
+    expect(await ui.find({ type: 'Text', text: /main 3333333 → 6666666/ })).toBeDefined()
+
+    await ui.press({ key: entry?.key ?? '' })
+
+    // One way back: the band shows it, and nothing runs before y.
+    expect(await ui.find({ type: 'Text', text: /git reset --keep 3333333/ })).toBeDefined()
+    expect(w.writes.filter(args => args[0] !== 'stash')).toEqual([])
+
+    await ui.press({ key: 'act-y' })
+    await w.clock.settle()
+
+    expect(w.writes.filter(args => args[0] !== 'stash')).toEqual([['reset', '--keep', h('3')]])
+    await ui.unmount()
+  })
+
+  test('a command that loses nothing is never held', async ($, on) => {
+    const w = world(on)
+    const asked = answering(on, 'Refuser')
+    const ran: string[] = []
+
+    on('tool.call', { tool: 'Bash' }, ($, e) => {
+      ran.push(e.command)
+
+      return { result: {} }
+    })
+    await openPane($, w)
+    await $.tool.call({ tool: 'Bash', command: 'git add -A && git commit -m "x"' })
+
+    expect(asked).toEqual([])
+    expect(ran).toEqual(['git add -A && git commit -m "x"'])
+  })
+
+  test('s shows what the session changed', async ($, on) => {
+    const w = world(on)
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    await ui.press({ key: 'key-s' })
+    await w.clock.settle()
+
+    expect(await ui.find({ type: 'Text', text: /✦ Cette session/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Branches et tags · 0/ })).toBeDefined()
+    await ui.unmount()
+  })
+})
+
+describe('the guard can be turned off', () => {
+  test('with guard: false, Claude’s reset --hard runs without a question', { options: { guard: false } }, async ($, on) => {
+    const w = world(on)
+    const ran: string[] = []
+
+    on('tool.call', { tool: 'Bash' }, ($, e) => {
+      ran.push(e.command)
+
+      return { result: {} }
+    })
+    await openPane($, w)
+    await $.tool.call({ tool: 'Bash', command: 'git reset --hard HEAD~1' })
+
+    expect(ran).toEqual(['git reset --hard HEAD~1'])
   })
 })
 
