@@ -28,6 +28,12 @@ const INLINE_ROWS = 60
 /** The width asked for, from the terminal's width the last /ctree saw. */
 const wanted = { columns: 120 }
 
+/** The band above the prompt: as tall as it may be (half the terminal in fullscreen), this at most. */
+const BAND_ROWS = 40
+
+/** The band's id, as its render hook last saw it: where the focus ring is moved while ctree is there. */
+const band = { id: null as string | null }
+
 const paneArgs = (focus: boolean) => ({
   id: PANE_ID,
   title: 'ctree',
@@ -37,7 +43,7 @@ const paneArgs = (focus: boolean) => ({
   rows: INLINE_ROWS,
 })
 
-function hostOf($: EngineInterface): Host {
+function hostOf($: EngineInterface, siteId: () => string): Host {
   // Every run, read or write, carries the same flags: no fsmonitor hook, no
   // gpg, no optional lock. Argv only, never a shell.
   const run = async (args: readonly string[], options?: GitOptions) => {
@@ -78,7 +84,7 @@ function hostOf($: EngineInterface): Host {
     },
     close: () => $.ui.close({ id: PANE_ID }),
     focus: async key => {
-      await $.ui.focus({ requestId: PANE_ID, key })
+      await $.ui.focus({ requestId: siteId(), key })
     },
     fill: async text => {
       const box = await $.prompt.read()
@@ -102,6 +108,10 @@ function hostOf($: EngineInterface): Host {
         // Dismissed, or nobody to ask: the guard reads it as a refusal.
         return null
       }
+    },
+    store: {
+      get: key => $.store.get(key),
+      set: (key, value) => $.store.set(key, value),
     },
     turns: () => $.session.turns(),
     now: () => $.clock.now(),
@@ -133,8 +143,9 @@ export const register: Register = (on, options) => {
       immediate: true,
     })
 
-    ctl = createController(hostOf($))
+    ctl = createController(hostOf($, () => (ctl?.placement === 'band' && band.id ? band.id : PANE_ID)))
     isGuarded = isGuardOn && e.isInteractive !== false
+    await ctl.loadPlacement().catch(() => undefined)
     // The commits the refs point at now: what the session did is drawn ✦,
     // and the session view counts from there.
     void ctl.recordBaseline().catch(() => undefined)
@@ -151,11 +162,37 @@ export const register: Register = (on, options) => {
 
     wanted.columns = Math.max(24, Math.floor(e.presentation.columns * DOCK_SHARE))
 
+    if (ctl.placement === 'band') {
+      ctl.opened()
+
+      return { text: 'ctree s’affiche au-dessus du prompt, sur toute la largeur. Ctrl+X Tab (ou un clic) pour le piloter, z pour le remettre en panneau.' }
+    }
+
     const opened = await $.ui.open(paneArgs(true))
 
     ctl.opened()
 
     return opened.isPlaced ? {} : { text: `ctree : ${opened.reason}` }
+  })
+
+  // Placed in the band (z), ctree draws above the prompt, the terminal's whole width.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (!ctl || ctl.placement !== 'band' || !ctl.isOpen || e.props.hasSurvey) {
+      return next(e)
+    }
+
+    const table = $.ui.resolve(e)
+    const { Box, Text, Button, Code } = table
+
+    band.id = e.requestId
+    ctl.shown()
+
+    return paneTree({ Box, Text, Button, Code, ...('Input' in table ? { Input: table.Input } : {}) }, ctl, {
+      columns: e.props.bodyColumns,
+      rows: Math.min(e.props.maxRows, BAND_ROWS),
+      isDocked: true,
+      now: await $.clock.now(),
+    })
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
@@ -203,9 +240,13 @@ export const register: Register = (on, options) => {
     return result
   }).catch(($, e, next) => next(e))
 
+  /** Whether a focus or scroll event is about ctree's own site: its pane, or the band while ctree draws there. */
+  const isOurs = (e: { component: string; requestId: string }) =>
+    e.component === 'Pane' ? e.requestId === PANE_ID : ctl?.placement === 'band' && ctl.isOpen && e.requestId === band.id
+
   // The ring moving over the rows is the selection moving; past an end it stays.
-  on('ui.focus', { requestId: PANE_ID }, ($, e, next) => {
-    if (!ctl || e.origin.kind !== 'person') {
+  on('ui.focus', { component: ['Pane', 'AbovePrompt'] }, ($, e, next) => {
+    if (!ctl || e.origin.kind !== 'person' || !isOurs(e)) {
       return next(e)
     }
 
@@ -213,10 +254,10 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   // The list draws only the rows in view, so it scrolls them itself.
-  on('ui.scroll', { requestId: PANE_ID }, ($, e, next) => {
+  on('ui.scroll', { component: ['Pane', 'AbovePrompt'] }, ($, e, next) => {
     const isList = ctl?.model.mode.kind === 'list' && ctl.model.snapshot?.kind === 'repo'
 
-    if (!ctl || !isList || e.origin.kind !== 'person') {
+    if (!ctl || !isList || e.origin.kind !== 'person' || !isOurs(e)) {
       return next(e)
     }
 

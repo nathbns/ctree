@@ -41,12 +41,12 @@ export type Frame = {
 const LONG_KEYS: readonly (readonly [string, string])[] = [
   ['j', '↓'], ['k', '↑'], ['⏎', 'ouvrir'], ['v', 'vue'], ['f', 'focus'], ['e', 'expliquer'],
   ['c', 'branche'], ['t', 'tag'], ['p', 'push'], ['u', 'annuler'], ['l', 'journal'], ['s', 'session'],
-  ['r', 'maj'], ['q', 'fermer'],
+  ['z', 'agrandir'], ['r', 'maj'], ['q', 'fermer'],
 ]
 const SHORT_KEYS: readonly (readonly [string, string])[] = [
   ['j', '↓'], ['k', '↑'], ['⏎', ''], ['v', 'vue'], ['f', 'focus'], ['e', 'expl.'],
   ['c', 'br.'], ['t', 'tag'], ['p', 'push'], ['u', '⟲'], ['l', 'journal'], ['s', 'session'],
-  ['r', 'maj'], ['q', '✕'],
+  ['z', 'large'], ['r', 'maj'], ['q', '✕'],
 ]
 
 const keysWidth = (keys: readonly (readonly [string, string])[], gap: number) =>
@@ -510,6 +510,7 @@ function keys(ui: Ui, ctl: Controller, width: number, where: 'list' | 'diff' | '
       {key('u', label('u'), () => void ctl.beginUndo())}
       {key('l', label('l'), () => ctl.openJournal())}
       {key('s', label('s'), () => void ctl.openSession())}
+      {key('z', ctl.placement === 'band' ? 'panneau' : label('z'), () => void ctl.zoom())}
       {key('r', label('r'), () => void ctl.refresh())}
       {key('q', label('q'), () => void ctl.close())}
     </Box>

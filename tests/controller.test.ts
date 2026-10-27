@@ -24,6 +24,7 @@ function fakeHost(script: Script = () => undefined) {
     refs: { 'refs/heads/main': h('3'), 'refs/heads/feature/ui': h('1'), 'refs/remotes/origin/main': h('3') },
     head: { branch: 'main', hash: h('3') },
   }
+  const stored = new Map<string, unknown>()
   let baseline: readonly string[] | null = null
   let journal: readonly JournalEntry[] | null = null
   let start: (RefState & { at: number }) | null = null
@@ -77,6 +78,12 @@ function fakeHost(script: Script = () => undefined) {
       asked.push(question)
 
       return git.answer
+    },
+    store: {
+      get: async key => stored.get(key),
+      set: async (key, value) => {
+        stored.set(key, value)
+      },
     },
     turns: async () => 4,
     now: async () => 1_800_000_000_000,

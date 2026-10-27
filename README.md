@@ -26,6 +26,10 @@ claude --plugin-dir ~/ctree
 Puis `/ctree` au prompt.
 
 - **En mode plein écran** (terminal d'au moins 110 colonnes), le panneau s'ancre à côté de la conversation. Il demande toute la largeur permise : Claude Code la plafonne à 45 % du terminal. Si tu l'as rétréci un jour, Claude Code garde ta largeur ; **Ctrl+X puis ←** l'élargit à nouveau.
+- **`z` passe en pleine largeur** : ctree quitte le panneau et s'affiche dans la bande au-dessus du prompt, sur toute la largeur du terminal (jusqu'à la moitié de sa hauteur), avec messages complets, noms de branches entiers et toutes les colonnes.
+  - Ctrl+X Tab, ou un clic, lui donne le clavier.
+  - `z` à nouveau revient au panneau.
+  - Le choix est retenu : `/ctree` rouvre là où tu l'as laissé.
 - **Sinon**, il s'ouvre au-dessus du prompt, aussi haut que la place le permet. `/tui fullscreen` passe en plein écran.
 
 ## Touches
@@ -43,6 +47,7 @@ Puis `/ctree` au prompt.
 | `u` | annule la dernière commande git de Claude (après confirmation) |
 | `l` | journal des commandes git de Claude ; Entrée sur une entrée l'annule |
 | `s` | vue session : ce que cette conversation a changé ; `e` y demande une description de PR |
+| `z` | pleine largeur au-dessus du prompt, ou retour au panneau (le choix est retenu) |
 | `r` | recharge le dépôt |
 | `q` | ferme le panneau ; dans la vue diff, le journal ou la session, revient à la liste |
 | `Échap` | ferme le panneau ; annule une action en attente ; dans la vue diff, revient à la liste ; juste après `e`, rend la main au prompt sans fermer |
@@ -194,7 +199,7 @@ tests/    lanes, parsing, étiquettes et couleurs, lignes, vue d'ensemble, actio
 Depuis le dossier du dépôt :
 
 ```sh
-claude plugin test .         # 172 tests
+claude plugin test .         # 174 tests
 claude plugin validate .
 npx -p typescript tsc -p .   # après un premier lancement avec --plugin-dir,
                              # qui dépose les types dans .claude-plugin/types/

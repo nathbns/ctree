@@ -33,7 +33,7 @@ const OPEN = {
  * Keeps every git run (its arguments after the flags), the writes apart,
  * what was put in the prompt, the panes opened, the rows appended.
  */
-function world(on: On, script: Script = () => undefined) {
+function world(on: On, script: Script = () => undefined, stored: Record<string, unknown> = {}) {
   const runs: string[][] = []
   const writes: string[][] = []
   const filled: string[] = []
@@ -83,6 +83,7 @@ function world(on: On, script: Script = () => undefined) {
   })
 
   mock.env(on, {})
+  mock.store(on, stored)
 
   const session = mock.session(on)
 
@@ -392,6 +393,69 @@ describe('seeing the whole graph (V3)', () => {
     expect(await ui.find({ type: 'Text', text: /◎ main/ })).toBeDefined()
     expect(w.runs.some(args => args.includes('refs/heads/main'))).toBe(true)
     await ui.unmount()
+  })
+})
+
+describe('the full-width band (z)', () => {
+  /** The band above the prompt of a 200-column fullscreen terminal. */
+  const BAND = {
+    plugin: 'ctree',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 195, scroll: { offset: 0, bodyRows: 19 }, view: {} },
+  } as const
+
+  /** What Claude Code draws in the band when ctree does not. */
+  const beneath = (on: On) =>
+    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+      const { Text } = $.ui.resolve(e)
+
+      // No JSX here: `h` is the fixtures' hash helper in this file.
+      return Text({ children: ['engine band'] })
+    })
+
+  test('z moves ctree from the pane to the whole width above the prompt, and back', async ($, on) => {
+    const w = world(on)
+
+    beneath(on)
+    await openPane($, w)
+
+    const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const before = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+    // Under the pane, the band is left to Claude Code.
+    expect(await before.find({ type: 'Text', text: /engine band/ })).toBeDefined()
+    await before.unmount()
+
+    await pane.press({ key: 'key-z' })
+
+    const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const merge = (await rowTexts(band)).find(row => row.includes('Merge branch'))
+
+    // 195 columns: the whole message, the author, the date and the hash.
+    expect(merge).toContain("Merge branch 'feature/lanes'")
+    expect(merge).toContain('Nathan')
+    expect(merge).toContain('3333333')
+    expect((await band.find({ key: 'key-z' }))?.props.label).toBe('panneau')
+
+    await band.press({ key: 'key-z' })
+
+    expect(w.opened).toHaveLength(2)
+    expect(await band.find({ type: 'Text', text: /engine band/ })).toBeDefined()
+    await band.unmount()
+    await pane.unmount()
+  })
+
+  test('the band, once chosen, is where /ctree opens next time', async ($, on) => {
+    const w = world(on, () => undefined, { placement: 'band' })
+
+    beneath(on)
+    await openPane($, w)
+
+    const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+
+    expect(w.opened).toHaveLength(0)
+    expect((await rowTexts(band)).some(row => row.includes('Merge branch'))).toBe(true)
+    await band.unmount()
   })
 })
 

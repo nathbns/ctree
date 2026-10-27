@@ -83,6 +83,11 @@ export type Host = {
     get: () => Promise<readonly JournalEntry[] | null>
     set: (entries: readonly JournalEntry[]) => Promise<void>
   }
+  /** Kept across sessions: where ctree is drawn. */
+  store: {
+    get: (key: string) => Promise<unknown>
+    set: (key: string, value: unknown) => Promise<void>
+  }
   /** Where the refs stood when the session started. */
   start: {
     get: () => Promise<(RefState & { at: number }) | null>
@@ -91,6 +96,15 @@ export type Host = {
 }
 
 export type SessionMode = { kind: 'session'; data: SessionData | null; error: string | null }
+
+/**
+ * Where ctree is drawn: the pane docked beside the transcript (Claude Code
+ * caps it at 45% of the width), or the band above the prompt, as wide as
+ * the terminal and up to half as tall.
+ */
+export type Placement = 'pane' | 'band'
+
+const PLACEMENT_KEY = 'placement'
 
 export type DiffMode = {
   kind: 'diff'
@@ -178,6 +192,7 @@ export function createController(host: Host) {
   let model: Model = INITIAL
   let windowSize = 20
   let isOpen = false
+  let placement: Placement = 'pane'
   let generation = 0
   let pending: { scope: 'all' | 'status'; timer: { cancel: () => void } } | null = null
   let noticeTimer: { cancel: () => void } | null = null
@@ -563,6 +578,31 @@ export function createController(host: Host) {
     get isOpen() {
       return isOpen
     },
+    get placement() {
+      return placement
+    },
+
+    /** Where the person last chose to see ctree, kept across sessions. */
+    async loadPlacement() {
+      placement = (await host.store.get(PLACEMENT_KEY)) === 'band' ? 'band' : 'pane'
+    },
+
+    /** z: the pane beside the transcript, or the full-width band above the prompt. */
+    async zoom() {
+      placement = placement === 'pane' ? 'band' : 'pane'
+      void host.store.set(PLACEMENT_KEY, placement).catch(() => undefined)
+
+      if (placement === 'band') {
+        // Our own close raises no hook of ours: the view stays open, in the band.
+        await host.close().catch(() => undefined)
+        isOpen = true
+        showNotice('Pleine largeur au-dessus du prompt · Ctrl+X Tab (ou un clic) pour piloter · z pour revenir au panneau', false)
+      } else {
+        isOpen = true
+        await host.open(true).catch(() => undefined)
+        host.invalidate()
+      }
+    },
     items: () => itemsOf(),
     selectedIndex: () => indexOf(model.selected, itemsOf()),
     hasWip,
@@ -574,9 +614,10 @@ export function createController(host: Host) {
       }
     },
 
-    /** /ctree opened the pane: load it afresh. */
+    /** /ctree opened the pane, or showed the band: load it afresh. */
     opened() {
       isOpen = true
+      host.invalidate()
       void refresh()
     },
 
@@ -904,8 +945,12 @@ export function createController(host: Host) {
 
     /** q: closes the pane. Our own close raises no hook of ours, so say it here. */
     async close() {
-      await host.close()
+      if (placement === 'pane') {
+        await host.close()
+      }
+
       closed()
+      host.invalidate()
     },
 
     /** e: a question about the selected row, put in the prompt, not sent. */
