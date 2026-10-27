@@ -4,7 +4,7 @@ import type { Engine } from 'claude-code/testing'
 
 import { isAllowedWrite } from '../src/git-actions'
 import { isReadOnly, READ_FLAGS } from '../src/git-commands'
-import { type Answer, demoGit, h, linearSnapshot, logOf, nth, type Script } from './fixtures'
+import { type Answer, COMMITS, demoGit, h, linearSnapshot, logOf, nth, type Script } from './fixtures'
 
 /** The pane docked beside a fullscreen transcript: 88 columns, 16 rows. */
 const PANE = {
@@ -703,6 +703,92 @@ describe('the edge cases', () => {
     }
 
     expect((await rowTexts(ui)).find(row => row.startsWith('❯'))).toContain('commit 160')
+    await ui.unmount()
+  })
+})
+
+describe('finding, comparing, the help (lot B)', () => {
+  test('the most used keys are drawn with h: aide last; the others are drawn hidden, and h lists them all', async ($, on) => {
+    const w = world(on)
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const hidden = (await ui.findAll({ type: 'Box' })).find(box => box.props.display === 'none')
+    const hiddenKeys = ((hidden?.children ?? []) as { props?: { hotkey?: string } }[]).map(child => child.props?.hotkey)
+
+    expect(await ui.find({ key: 'key-g' })).toBeDefined()
+    expect(await ui.find({ key: 'key-h' })).toBeDefined()
+    expect(hiddenKeys).toContain('z')
+    expect(hiddenKeys).not.toContain('j')
+
+    await ui.press({ key: 'key-h' })
+    expect(await ui.find({ type: 'Text', text: /ctree · aide/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /pleine largeur au-dessus du prompt/ })).toBeDefined()
+
+    await ui.press({ key: 'key-q' })
+    expect(await ui.find({ type: 'Text', text: /ctree · aide/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('g asks what to find; Enter lists the commits; Enter on one selects it in the graph, highlighted', async ($, on) => {
+    const w = world(on, args => {
+      if (args[0] === 'log' && args.some(arg => arg.startsWith('--grep='))) return { exitCode: 0, stdout: logOf([COMMITS[6]!]) }
+      if (args[0] === 'log' && args.some(arg => arg.startsWith('--author='))) return { exitCode: 0, stdout: '' }
+
+      return undefined
+    })
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    await ui.press({ key: 'key-g' })
+    expect((await ui.find({ key: 'search-query' }))?.props.placeholder).toBe('message, auteur, hash ou fichier')
+
+    await ui.input({ key: 'search-query', text: 'parsing' })
+    await w.clock.settle()
+
+    expect(w.runs.find(args => args.includes('--grep=parsing'))).toContain('--fixed-strings')
+
+    const hit = await ui.find({ key: `hit-${h('7')}` })
+
+    expect(hit?.text).toContain('Parsing de git log')
+    expect(hit?.text).toContain('message')
+
+    await ui.press({ key: `hit-${h('7')}` })
+    await w.clock.settle()
+
+    expect((await rowTexts(ui)).find(row => row.startsWith('❯'))).toContain('Parsing de git log')
+    expect((await ui.find({ type: 'Text', text: /⌕ « parsing » 1\/1/ }))).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('m marks a commit, d on another lists the files between them, Enter shows one’s diff', async ($, on) => {
+    const w = world(on, args => {
+      if (args[0] === 'diff' && args.includes('--name-status')) return { exitCode: 0, stdout: 'M\0a.txt\0' }
+      if (args[0] === 'diff' && args.includes('--numstat') && !args.includes('--no-index')) return { exitCode: 0, stdout: '3\t1\ta.txt\0' }
+
+      return undefined
+    })
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    await ui.press({ key: 'key-m' })
+    await ui.press({ key: 'key-j' })
+    await ui.press({ key: 'key-d' })
+    await w.clock.settle()
+
+    expect((await ui.find({ type: 'Text', text: /⇄ 4444444/ }))?.text).toContain('→ 3333333')
+    expect((await ui.find({ key: 'cmp-0' }))?.text).toContain('a.txt')
+
+    await ui.press({ key: 'cmp-0' })
+    await w.clock.settle()
+
+    expect((await ui.find({ type: 'Text', text: /a\.txt · 4444444 → 3333333/ }))).toBeDefined()
+    expect(w.runs.some(args => args[0] === 'diff' && args.includes(h('4')) && args.includes(h('3')) && args.at(-1) === 'a.txt')).toBe(true)
     await ui.unmount()
   })
 })

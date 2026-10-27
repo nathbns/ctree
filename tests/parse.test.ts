@@ -12,6 +12,7 @@ import {
   parseNumstat,
   parseRefs,
   parseRepoInfo,
+  parseStashes,
   parseStatus,
   parseWorktrees,
 } from '../src/git-parse'
@@ -132,11 +133,24 @@ describe('the commands are reads', () => {
       Cmd.commitFileDiff(A, B, 'x', 'y'),
       Cmd.worktreeFileDiff('x'),
       Cmd.untrackedFileDiff('x'),
+      Cmd.stashes(),
+      Cmd.searchLog({ kind: 'message', text: '--exec=x' }, { kind: 'all' }, true),
+      Cmd.searchLog({ kind: 'author', text: 'léa' }, { kind: 'focus', ref: 'refs/heads/main', label: 'main', isFirstParent: true }, true),
+      Cmd.searchLog({ kind: 'path', text: 'src/*.ts' }, { kind: 'all' }, false),
+      Cmd.rangeNumstat(A, B),
+      Cmd.rangeNameStatus(A, null),
+      Cmd.rangeFileDiff(A, B, 'x', 'y'),
+      Cmd.rangeFileDiff(A, null, 'x'),
     ]
 
     for (const args of built) {
       expect(`${args.join(' ')} → ${isReadOnly(args)}`).toBe(`${args.join(' ')} → true`)
     }
+  })
+
+  test('a search keeps the text inside its option, and a path search reads it literally', () => {
+    expect(Cmd.searchLog({ kind: 'message', text: '-p' }, { kind: 'all' }, true)).toContain('--grep=-p')
+    expect(Cmd.searchLog({ kind: 'path', text: 'a*[b]' }, { kind: 'all' }, true).at(-1)).toBe(':(glob,icase)**/*a\\*\\[b]*')
   })
 
   test('commands that write, or reads in a writing form, are refused', () => {
@@ -165,6 +179,21 @@ describe('the commands are reads', () => {
   test('the session query escapes the email and reads the starting tips from stdin', () => {
     expect(Cmd.sessionCommits({ withHead: false, email: 'a.b+c@d.e' })).toEqual([
       'rev-list', '--max-count=1000', '--committer=<a\\.b\\+c@d\\.e>', '--branches', '--stdin',
+    ])
+  })
+})
+
+describe('stashes', () => {
+  test('each with the commit it was made on, its selector and its message', () => {
+    const out = [
+      [A, `${B} ${'c'.repeat(40)}`, 'Nathan', 'n@e.st', '1700000000', 'stash@{0}', 'On main: essai'].join('\x1f'),
+      [B, `${A} ${'c'.repeat(40)} ${'d'.repeat(40)}`, 'Léa', 'l@e.st', '1600000000', 'stash@{1}', 'WIP on main: 1234567 x'].join('\x1f'),
+      'noise',
+    ].join('\0')
+
+    expect(parseStashes(out)).toEqual([
+      { hash: A, base: B, selector: 'stash@{0}', author: 'Nathan', email: 'n@e.st', time: 1700000000, subject: 'On main: essai' },
+      { hash: B, base: A, selector: 'stash@{1}', author: 'Léa', email: 'l@e.st', time: 1600000000, subject: 'WIP on main: 1234567 x' },
     ])
   })
 })

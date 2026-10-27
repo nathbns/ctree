@@ -1,7 +1,7 @@
 // Rows of the pane as runs of styled text: the pure half of the drawing.
 // The hooks module turns each run into a `Text` and each row into a `Button`.
 
-import { colorPaths, DASHED_COLOR, HEAD_COLOR, TAG_COLOR } from './colors'
+import { colorPaths, DASHED_COLOR, HEAD_COLOR, STASH_COLOR, TAG_COLOR } from './colors'
 import { absoluteDate, counts, relativeDate, shortAuthor, shortHash, statusLetter } from './format'
 import { computeGraph, glyphOf, type Graph } from './lanes'
 import { labelsByCommit, labelText, refsByCommit, type Label } from './labels'
@@ -18,7 +18,7 @@ import {
   truncateStart,
 } from './layout'
 import { collapse, type Fold } from './overview'
-import type { Commit, FileChange, RepoSnapshot } from './types'
+import type { Commit, FileChange, RepoSnapshot, Stash } from './types'
 
 export type Segment = {
   text: string
@@ -46,18 +46,50 @@ export type View = {
   session: Set<string>
 }
 
+/** A stash as the graph draws it: a commit on the one it was made on. */
+export function stashCommit(stash: Stash): Commit {
+  return { hash: stash.hash, parents: [stash.base], author: stash.author, email: stash.email, time: stash.time, subject: stash.subject, stash: stash.selector }
+}
+
+/**
+ * The commits with each stash among them, as Git Graph draws them: where its
+ * date falls, but above the commit it was made on. A stash whose commit is
+ * not loaded yet waits for it.
+ */
+export function withStashes(commits: readonly Commit[], stashes: readonly Stash[]): Commit[] {
+  if (stashes.length === 0) return [...commits]
+
+  const index = new Map(commits.map((commit, i) => [commit.hash, i]))
+  const at = new Map<number, Commit[]>()
+
+  for (const stash of stashes) {
+    const base = index.get(stash.base)
+
+    if (base === undefined) continue
+
+    const older = commits.findIndex(commit => commit.time <= stash.time)
+    const place = older === -1 ? base : Math.min(older, base)
+
+    at.set(place, [...(at.get(place) ?? []), stashCommit(stash)])
+  }
+
+  return commits.flatMap((commit, i) => [...(at.get(i) ?? []), commit])
+}
+
 /**
  * The view of a snapshot, its linear runs folded when `overview` is given
  * (all but the runs it names as opened). What shapes the history is kept:
- * refs, HEAD and this session's commits, as well as merges, forks and roots.
+ * refs, HEAD, stashes and this session's commits, as well as merges, forks and roots.
  */
 export function buildView(snapshot: RepoSnapshot, overview: { opened: ReadonlySet<string> } | null = null): View {
   const head = snapshot.head.hash
   const refsAt = refsByCommit(snapshot.refs)
   const session = new Set(snapshot.sessionCommits)
+  const commits = withStashes(snapshot.commits, snapshot.stashes)
+  const isKept = (commit: Commit) => refsAt.has(commit.hash) || commit.hash === head || session.has(commit.hash) || commit.stash !== undefined
   const shown = overview
-    ? collapse(snapshot.commits, commit => refsAt.has(commit.hash) || commit.hash === head || session.has(commit.hash), overview.opened)
-    : { commits: [...snapshot.commits], folds: new Map<string, Fold>() }
+    ? collapse(commits, isKept, overview.opened)
+    : { commits, folds: new Map<string, Fold>() }
   // The dashed line runs to HEAD only when HEAD is drawn (not under another branch's focus).
   const isHeadShown = head !== null && shown.commits.some(commit => commit.hash === head)
   const input = [
@@ -65,18 +97,23 @@ export function buildView(snapshot: RepoSnapshot, overview: { opened: ReadonlySe
     ...shown.commits,
   ]
   const graph = computeGraph(input, { dashed: WIP })
+  const labels = labelsByCommit({
+    refs: snapshot.refs,
+    head: snapshot.head,
+    worktrees: snapshot.worktrees,
+    toplevel: snapshot.repo.toplevel,
+  })
+
+  for (const stash of snapshot.stashes) {
+    labels.set(stash.hash, [{ kind: 'stash', name: stash.selector }])
+  }
 
   return {
     commits: shown.commits,
     folds: shown.folds,
     graph,
     colors: colorPaths(graph, refsAt, head),
-    labels: labelsByCommit({
-      refs: snapshot.refs,
-      head: snapshot.head,
-      worktrees: snapshot.worktrees,
-      toplevel: snapshot.repo.toplevel,
-    }),
+    labels,
     rowOf: new Map(input.map((commit, row) => [commit.hash, row])),
     head,
     session,
@@ -197,6 +234,10 @@ export type LineOptions = {
   isSelected: boolean
   /** Milliseconds since the epoch, for relative dates. */
   now: number
+  /** The commit the search found: its message stands out. */
+  isMatch?: boolean
+  /** The commit marked for a comparison (`m`). */
+  isMarked?: boolean
 }
 
 function pointer(isSelected: boolean): Segment {
@@ -204,6 +245,7 @@ function pointer(isSelected: boolean): Segment {
 }
 
 export function nodeGlyph(view: View, commit: Commit): string {
+  if (commit.stash) return '≡'
   if (commit.hash === view.head) return '◉'
 
   return commit.isMerge || commit.parents.length > 1 ? '○' : '●'
@@ -214,21 +256,31 @@ export function commitLine(view: View, commit: Commit, options: LineOptions): Se
   const row = view.rowOf.get(commit.hash) ?? -1
   const color = view.colors[view.graph.rows[row]?.path ?? -1]
   const lane = view.graph.rows[row]?.lane ?? -1
-  const graph = fitCells(rowCells(view, row, nodeGlyph(view, commit)), options.graphWidth, lane * 2)
+  const cells = rowCells(view, row, nodeGlyph(view, commit))
+  const node = cells[lane * 2]
+
+  if (commit.stash && node) cells[lane * 2] = { ...node, color: STASH_COLOR }
+
+  const graph = fitCells(cells, options.graphWidth, lane * 2)
   const area = Math.max(4, options.width - 2 - graph.length - 1 - sideWidth(options.columns))
   const isSession = view.session.has(commit.hash)
+  const marks = (isSession ? 2 : 0) + (options.isMarked ? 2 : 0)
   const chips = fitLabels(view.labels.get(commit.hash) ?? [], color, labelBudget(area))
   const chipsWidth = chips.reduce((sum, chip) => sum + textWidth(chip.text), 0)
-  const messageRoom = Math.max(1, area - chipsWidth - (chipsWidth > 0 ? 1 : 0) - (isSession ? 2 : 0))
+  const messageRoom = Math.max(1, area - chipsWidth - (chipsWidth > 0 ? 1 : 0) - marks)
   const subject = truncate(commit.subject || '(sans message)', messageRoom)
-  const used = (isSession ? 2 : 0) + textWidth(subject) + chipsWidth
+  const used = marks + textWidth(subject) + chipsWidth
+  const message: Segment = options.isMatch
+    ? { text: subject, color: 'warning', bold: true }
+    : commit.subject && !commit.stash ? { text: subject } : { text: subject, dim: true }
 
   return merge([
     pointer(options.isSelected),
     ...cellSegments(graph),
     { text: ' ' },
+    ...(options.isMarked ? [{ text: '⚑ ', color: 'suggestion', bold: true as const }] : []),
     ...(isSession ? [{ text: '✦ ', color: 'claude' }] : []),
-    commit.subject ? { text: subject } : { text: subject, dim: true },
+    message,
     { text: ' '.repeat(Math.max(chipsWidth > 0 ? 1 : 0, area - used)) },
     ...chips,
     ...sideSegments(commit, options),
@@ -313,8 +365,17 @@ export function noteLine(view: View, under: string, text: string, options: LineO
   ])
 }
 
+/** What the header says beside the repository: the view's settings, the mark, the search. */
+export type HeaderExtras = {
+  isOverview?: boolean
+  /** The commit marked for a comparison. */
+  mark?: string | null
+  /** The search the graph highlights: its text, the result selected, how many. */
+  search?: { query: string; index: number; count: number } | null
+}
+
 /** The line above the graph: repository, branch, how it stands against its upstream. */
-export function headerLine(snapshot: RepoSnapshot, width: number, isOverview = false): Segment[] {
+export function headerLine(snapshot: RepoSnapshot, width: number, extras: HeaderExtras = {}): Segment[] {
   const parts: Segment[][] = [[{ text: snapshot.repo.name, bold: true }]]
   const head = snapshot.head
 
@@ -341,7 +402,19 @@ export function headerLine(snapshot: RepoSnapshot, width: number, isOverview = f
     parts.push([{ text: `◎ ${snapshot.scope.label}${snapshot.scope.isFirstParent ? ' · 1er parent' : ''}`, color: 'suggestion', bold: true }])
   }
 
-  if (isOverview) {
+  if (extras.search) {
+    const { query, index, count } = extras.search
+
+    const where = count === 0 ? 'aucun' : index >= 0 ? `${index + 1}/${count}` : `${count}`
+
+    parts.push([{ text: `⌕ « ${truncate(query, 24)} » ${where}`, color: 'warning', bold: true }])
+  }
+
+  if (extras.mark) {
+    parts.push([{ text: `⚑ ${shortHash(extras.mark)}`, color: 'suggestion', bold: true }])
+  }
+
+  if (extras.isOverview) {
     parts.push([{ text: '▤ vue d’ensemble', color: 'suggestion' }])
   }
 
@@ -379,6 +452,36 @@ export function explainRangePrompt(fold: Fold): string {
     `à ${shortHash(newest.hash)} « ${newest.subject} » : ce qu'ils changent ensemble et pourquoi. ` +
     `Lis-les avec git log -p ${shortHash(oldest.hash)}~1..${shortHash(newest.hash)}.`
   )
+}
+
+/** The question `e` puts in the prompt for a stash. */
+export function explainStashPrompt(commit: Commit): string {
+  const short = shortHash(commit.hash)
+
+  return (
+    `Explique le stash ${commit.stash ?? short} (${short}) « ${commit.subject} » : ce qu'il contient, ` +
+    `et s'il vaut la peine de l'appliquer. Lis-le avec git stash show -p ${short}.`
+  )
+}
+
+/** The question `e` puts in the prompt for a comparison, or for one of its files. */
+export function explainComparePrompt(from: Commit, to: Commit | null, path?: string): string {
+  const a = shortHash(from.hash)
+  const b = to ? shortHash(to.hash) : null
+  const diff = `git diff ${a}${b ? ` ${b}` : ''}${path ? ` -- ${path}` : ''}`
+
+  if (!to || !b) {
+    return path
+      ? `Explique ce qui change dans ${path} entre ${a} « ${from.subject} » et mes modifications non commitées (${diff}).`
+      : `Compare mes modifications non commitées avec ${a} « ${from.subject} » : ce qui a changé depuis et pourquoi. Lis-le avec ${diff}.`
+  }
+
+  return path
+    ? `Explique ce qui change dans ${path} de ${a} « ${from.subject} » à ${b} « ${to.subject} » : quoi et pourquoi. Lis-le avec ${diff}.`
+    : (
+      `Compare ${a} « ${from.subject} » et ${b} « ${to.subject} » : ce qui a changé de l'un à l'autre, pourquoi, ` +
+      `et ce qu'il faut surveiller. Lis les commits avec git log --oneline ${a}...${b} et les changements avec git diff --stat ${a} ${b}.`
+    )
 }
 
 export function explainFilePrompt(commit: Commit, path: string): string {
@@ -433,6 +536,8 @@ function chipOf(label: Label, color: string | undefined): Segment {
       return { text, color: TAG_COLOR }
     case 'detached':
       return { text: ` ${text} `, color: 'warning', inverse: true, bold: true }
+    case 'stash':
+      return { text, color: STASH_COLOR, italic: true }
   }
 }
 

@@ -3,7 +3,10 @@ import { describe, expect, test } from 'claude-code/testing'
 import { createController, type Host, LET_IT_RUN, REFUSE } from '../hooks/controller'
 import { isAllowedWrite } from '../src/git-actions'
 import type { JournalEntry, RefState } from '../src/journal'
-import { type Answer, demoGit, h, linearSnapshot, logOf, nth, type Script } from './fixtures'
+import { type Answer, COMMITS, demoGit, h, linearSnapshot, logOf, nth, type Script } from './fixtures'
+
+/** The demo's commits a search finds: Calcul des lanes, then Parsing de git log. */
+const COMMITS_FOUND = [COMMITS[3], COMMITS[6]]
 
 /**
  * A Host over the scripted demo repository; timers fire when `flush` says.
@@ -14,6 +17,7 @@ function fakeHost(script: Script = () => undefined) {
   const runs: string[][] = []
   const timers: (() => void)[] = []
   const filled: string[] = []
+  const copied: string[] = []
   const focused: string[] = []
   const writes: string[][] = []
   const notes: string[] = []
@@ -115,6 +119,11 @@ function fakeHost(script: Script = () => undefined) {
     focus: async key => {
       focused.push(key)
     },
+    copy: async text => {
+      copied.push(text)
+
+      return true
+    },
     fill: async text => {
       filled.push(text)
 
@@ -128,7 +137,7 @@ function fakeHost(script: Script = () => undefined) {
     },
   }
 
-  return { host, runs, filled, focused, writes, notes, asked, git, repo, flush: () => timers.splice(0).forEach(fn => fn()) }
+  return { host, runs, filled, copied, focused, writes, notes, asked, git, repo, flush: () => timers.splice(0).forEach(fn => fn()) }
 }
 
 /** git for a linear history of 250 commits, `main` and HEAD on the newest. */
@@ -587,5 +596,194 @@ describe('refreshes', () => {
     await ctl.refresh()
 
     expect(ctl.model.selected).toBe(`c:${h('6')}`)
+  })
+})
+
+describe('comparing two commits', () => {
+  /** git telling what changes between two commits, and how far apart they are. */
+  const apart: Script = args => {
+    if (args[0] === 'diff' && args.includes('--name-status')) return { exitCode: 0, stdout: 'M\0a.txt\0A\0b.txt\0' }
+    if (args[0] === 'diff' && args.includes('--numstat') && !args.includes('--no-index')) return { exitCode: 0, stdout: '3\t1\ta.txt\x002\t0\tb.txt\0' }
+    if (args[0] === 'rev-list' && args[1] === '--count') return { exitCode: 0, stdout: args[2] === `${h('7')}..${h('1')}` ? '4\n' : '0\n' }
+
+    return undefined
+  }
+
+  test('m marks, d on another compares the older with the newer; Enter shows a file, Escape comes back', async () => {
+    const { ctl, runs, filled } = await loaded(apart)
+
+    ctl.ringMoved(`c:${h('1')}`)
+    ctl.toggleMark()
+    expect(ctl.model.mark).toBe(h('1'))
+
+    ctl.ringMoved(`c:${h('7')}`)
+    await ctl.beginCompare()
+
+    const mode = ctl.model.mode
+
+    if (mode.kind !== 'compare') throw new Error(`mode ${mode.kind}`)
+
+    expect([mode.from.hash, mode.to?.hash]).toEqual([h('7'), h('1')])
+    expect(mode.counts).toEqual({ ahead: 4, behind: 0 })
+    expect(mode.files.state === 'ready' && mode.files.files.map(file => [file.status, file.path, file.added])).toEqual([
+      ['M', 'a.txt', 3],
+      ['A', 'b.txt', 2],
+    ])
+
+    await ctl.explain()
+    expect(filled.at(-1)).toContain('git diff --stat 7777777 1111111')
+
+    ctl.openCompareFile(1)
+    await ctl.idle()
+    expect(ctl.model.mode.kind).toBe('diff')
+    expect(runs.some(args => args[0] === 'diff' && args.includes(h('7')) && args.includes(h('1')) && args.at(-1) === 'b.txt')).toBe(true)
+
+    expect(ctl.escape()).toBe('back')
+    expect(ctl.model.mode.kind).toBe('compare')
+    expect(ctl.escape()).toBe('back')
+    expect(ctl.model.mode.kind).toBe('list')
+    expect(ctl.model.mark).toBe(h('1'))
+  })
+
+  test('with no mark, d compares with HEAD; on HEAD itself it says how to mark', async () => {
+    const { ctl } = await loaded(apart)
+
+    await ctl.beginCompare()
+    expect(ctl.model.notice).toContain('Marque un commit avec m')
+
+    ctl.ringMoved(`c:${h('1')}`)
+    await ctl.beginCompare()
+
+    const mode = ctl.model.mode
+
+    expect(mode.kind === 'compare' && [mode.from.hash, mode.to?.hash]).toEqual([h('3'), h('1')])
+  })
+})
+
+describe('searching', () => {
+  const found: Script = args => {
+    if (args[0] === 'log' && args.some(arg => arg.startsWith('--grep='))) return { exitCode: 0, stdout: logOf([COMMITS_FOUND[0]!, COMMITS_FOUND[1]!]) }
+    if (args[0] === 'log' && args.some(arg => arg.startsWith('--author='))) return { exitCode: 0, stdout: '' }
+
+    return undefined
+  }
+
+  test('g opens the field; Enter lists what git found; one chosen is selected in the graph, n goes on, Escape clears it', async () => {
+    const { ctl, focused } = await loaded(found)
+
+    ctl.beginSearch()
+    expect(ctl.model.action?.kind).toBe('search-form')
+    expect(focused.at(-1)).toBe('search-query')
+
+    await ctl.submitSearch('lanes')
+
+    const mode = ctl.model.mode
+
+    expect(mode.kind === 'search' && mode.result?.hits.map(hit => hit.commit.hash)).toEqual([h('4'), h('7')])
+    expect(ctl.model.action).toBeNull()
+    expect(focused.at(-1)).toBe(`hit-${h('4')}`)
+
+    await ctl.openHit(h('4'))
+    expect(ctl.model.mode.kind).toBe('list')
+    expect(ctl.model.selected).toBe(`c:${h('4')}`)
+    expect(ctl.model.search?.index).toBe(0)
+
+    await ctl.nextHit()
+    expect(ctl.model.selected).toBe(`c:${h('7')}`)
+    await ctl.nextHit()
+    expect(ctl.model.selected).toBe(`c:${h('4')}`)
+
+    expect(ctl.escape()).toBe('back')
+    expect(ctl.model.search).toBeNull()
+    expect(ctl.escape()).toBe('close')
+  })
+
+  test('a result past the pages loaded is loaded up to; one off the history drawn is shown in focus', async () => {
+    const far = { ...COMMITS_FOUND[0]!, hash: h('e'), parents: [] }
+    const script: Script = args => {
+      if (args[0] === 'log' && args.includes(h('e'))) return { exitCode: 0, stdout: logOf([far]) }
+      if (args[0] === 'log' && args.some(arg => arg.startsWith('--grep='))) return { exitCode: 0, stdout: logOf([linearSnapshot(250).commits[180]!, far]) }
+      if (args[0] === 'log' && args.some(arg => arg.startsWith('--author='))) return { exitCode: 0, stdout: '' }
+
+      return linearGit(args)
+    }
+    const { ctl } = await loaded(script)
+
+    expect(ctl.model.snapshot?.kind === 'repo' && ctl.model.snapshot.commits.length).toBe(100)
+
+    ctl.beginSearch()
+    await ctl.submitSearch('commit')
+    await ctl.openHit(nth(180))
+    expect(ctl.model.selected).toBe(`c:${nth(180)}`)
+
+    await ctl.openHit(h('e'))
+    expect(ctl.model.scope).toEqual({ kind: 'focus', ref: h('e'), label: 'eeeeeee', isFirstParent: false })
+    expect(ctl.model.selected).toBe(`c:${h('e')}`)
+    expect(ctl.model.notice).toContain('montré en focus')
+  })
+})
+
+describe('copying, HEAD, stashes and the help', () => {
+  test('y puts the selected commit’s full hash on the clipboard', async () => {
+    const { ctl, copied } = await loaded()
+
+    ctl.ringMoved(`c:${h('4')}`)
+    await ctl.copyHash()
+
+    expect(copied).toEqual([h('4')])
+    expect(ctl.model.notice).toContain(h('4'))
+  })
+
+  test('i comes back to HEAD from far down the history', async () => {
+    const { ctl, focused } = await loaded(linearGit)
+
+    ctl.ringMoved(`c:${nth(90)}`)
+    await ctl.jumpHead()
+
+    expect(ctl.model.selected).toBe(`c:${nth(0)}`)
+    expect(ctl.model.top).toBe(0)
+    expect(focused.at(-1)).toBe(`c:${nth(0)}`)
+  })
+
+  test('a stash is in the graph: Enter lists its files, c says what it is, a applies it once confirmed', async () => {
+    const stash = [h('a'), `${h('3')} ${h('b')}`, 'Nathan Test', 'n@e.st', '1793000000', 'stash@{0}', 'On main: essai'].join('\x1f')
+    const { ctl, writes, notes } = await loaded(args => (args[0] === 'stash' ? { exitCode: 0, stdout: `${stash}\0` } : undefined))
+    const row = ctl.items().find(item => item.key === `c:${h('a')}`)
+
+    if (!row) throw new Error('no stash row')
+
+    await ctl.press(row)
+    expect(ctl.items().some(item => item.kind === 'file' && item.under === h('a'))).toBe(true)
+
+    ctl.beginSwitch()
+    expect(ctl.model.action).toBeNull()
+    expect(ctl.model.notice).toContain('Un stash')
+
+    ctl.beginApplyStash()
+
+    const band = ctl.model.action
+
+    expect(band?.kind === 'confirm' && band.action.args).toEqual(['stash', 'apply', h('a')])
+
+    await ctl.confirm()
+    expect(writes).toEqual([['stash', 'apply', h('a')]])
+    expect(notes[0]).toContain('stash@{0} « On main: essai »')
+  })
+
+  test('a with no stash selected says how', async () => {
+    const { ctl } = await loaded()
+
+    ctl.beginApplyStash()
+    expect(ctl.model.action).toBeNull()
+    expect(ctl.model.notice).toContain('Sélectionne un stash')
+  })
+
+  test('h shows the help, q comes back', async () => {
+    const { ctl } = await loaded()
+
+    ctl.openHelp()
+    expect(ctl.model.mode.kind).toBe('help')
+    ctl.back()
+    expect(ctl.model.mode.kind).toBe('list')
   })
 })

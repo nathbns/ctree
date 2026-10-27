@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { HEAD_COLOR } from '../src/colors'
+import { HEAD_COLOR, STASH_COLOR } from '../src/colors'
 import { columnsFor, graphLimit, textWidth } from '../src/layout'
 import {
   buildView,
@@ -12,6 +12,7 @@ import {
   lineText,
   type View,
   wipLine,
+  withStashes,
 } from '../src/rows'
 import type { Commit, RepoSnapshot } from '../src/types'
 import { COMMITS, h, linearSnapshot, NOW, SNAPSHOT } from './fixtures'
@@ -172,7 +173,7 @@ describe('rows', () => {
       scope: { kind: 'focus', ref: 'refs/heads/feature/ui', label: 'feature/ui', isFirstParent: true },
     }
 
-    expect(lineText(headerLine(focused, 120, true))).toBe(
+    expect(lineText(headerLine(focused, 120, { isOverview: true }))).toBe(
       'demo · ⎇ main · ✓ origin/main · ◎ feature/ui · 1er parent · ▤ vue d’ensemble',
     )
   })
@@ -205,5 +206,71 @@ describe('rows', () => {
     expect(text({ ...SNAPSHOT, repo: { ...SNAPSHOT.repo, isLinkedWorktree: true }, sessionCommits: [h('1')] })).toBe(
       'demo · ⎇ main · ✓ origin/main · worktree secondaire · ✦ 1 cette session',
     )
+  })
+
+  test('a stash is drawn on the commit it was made on, where its date falls; one whose commit is not loaded waits', () => {
+    const t = (n: number) => Math.floor(NOW / 1000) - n * 3600
+    const stash = (digit: string, base: string, hours: number, selector: string, subject: string) =>
+      ({ hash: h(digit), base, selector, author: 'Nathan Test', email: '', time: t(hours), subject })
+    const snapshot: RepoSnapshot = {
+      ...SNAPSHOT,
+      stashes: [
+        stash('a', h('3'), 1, 'stash@{0}', 'On main: essai'),
+        stash('b', h('6'), 40, 'stash@{1}', 'WIP on main: 6666666 Étiquettes'),
+        stash('c', h('e'), 1, 'stash@{2}', 'sur un commit pas encore chargé'),
+      ],
+    }
+    const view = buildView(snapshot)
+    const width = 88
+    const options = { width, graphWidth: graphWidthOf(view, [...view.rowOf.values()], graphLimit(width)), columns: columnsFor(width), now: NOW, isSelected: false }
+
+    expect([lineText(wipLine(view, 2, options)), ...view.commits.map(commit => lineText(commitLine(view, commit, options)))]).toEqual([
+      '  ◌ Modifications non commitées (2)',
+      '  ┊ ≡ On main: essai                           ≡ stash@{0}  Nathan          1 h  aaaaaaa',
+      '  ┊ │ ● Panneau : colonnes adaptatives          feature/ui  Nathan          2 h  1111111',
+      '  ┊ │ ● Navigation j/k                                      Nathan          1 j  2222222',
+      "  ◉─┴─┼─╮ Merge branch 'feature/…  main ⇄ origin  ◇ v0.2.0  Nathan          5 h  3333333",
+      '  │   │ ● Calcul des lanes : octopus… origin/feature/lanes  Léa             6 h  4444444',
+      '  │   │ ● Tests du calcul des lanes                         Léa             1 j  5555555',
+      '  │ ≡ │ │ WIP on main: 6666666 Étiquettes      ≡ stash@{1}  Nathan          1 j  bbbbbbb',
+      '  ●─┴─╯ │ Étiquettes de branches                            Nathan          2 j  6666666',
+      '  ●─────╯ Parsing de git log                      ◇ v0.1.0  Nathan          3 j  7777777',
+      '  ● Commit initial                                          Nathan        2 sem  8888888',
+    ])
+
+    const node = commitLine(view, view.commits[0]!, options).find(segment => segment.text.includes('≡'))
+
+    expect(node?.color).toBe(STASH_COLOR)
+    // Above its commit even when its date is older than the commit's.
+    expect(withStashes(COMMITS, [stash('d', h('8'), 9000, 'stash@{3}', 'vieux')]).map(commit => commit.hash.slice(0, 1))).toEqual(
+      ['1', '2', '3', '4', '5', '6', '7', 'd', '8'],
+    )
+  })
+
+  test('the overview keeps a stash and the commit it was made on', () => {
+    const snapshot = linearSnapshot(12)
+    const base = snapshot.commits[6]!
+    const view = buildView(
+      { ...snapshot, stashes: [{ hash: h('a'), base: base.hash, selector: 'stash@{0}', author: 'x', email: '', time: base.time, subject: 's' }] },
+      { opened: new Set() },
+    )
+
+    expect(view.commits.some(commit => commit.hash === h('a'))).toBe(true)
+    expect(view.commits.some(commit => commit.hash === base.hash)).toBe(true)
+  })
+
+  test('a search result stands out, the marked commit is flagged, and the header says both', () => {
+    const view = buildView(SNAPSHOT)
+    const options = { width: 88, graphWidth: 8, columns: columnsFor(88), isSelected: false, now: NOW }
+    const found = commitLine(view, COMMITS[3]!, { ...options, isMatch: true })
+    const marked = lineText(commitLine(view, COMMITS[6]!, { ...options, isMarked: true }))
+
+    expect(found.find(segment => segment.text.startsWith('Calcul'))?.color).toBe('warning')
+    expect(marked).toContain('⚑ Parsing de git log')
+    expect(textWidth(marked)).toBe(88)
+    expect(lineText(headerLine(SNAPSHOT, 120, { mark: h('7'), search: { query: 'lanes', index: 1, count: 3 } }))).toBe(
+      'demo · ⎇ main · ✓ origin/main · ⌕ « lanes » 2/3 · ⚑ 7777777',
+    )
+    expect(lineText(headerLine(SNAPSHOT, 120, { search: { query: 'zzz', index: -1, count: 0 } }))).toContain('⌕ « zzz » aucun')
   })
 })

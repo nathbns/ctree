@@ -21,6 +21,8 @@ export type Label =
   | { kind: 'remote'; name: string }
   | { kind: 'tag'; name: string }
   | { kind: 'detached' }
+  /** A stash's selector, `stash@{0}`. */
+  | { kind: 'stash'; name: string }
 
 /** Every commit's labels, in drawing order. */
 export function labelsByCommit(input: {
@@ -103,6 +105,8 @@ export function labelText(label: Label): string {
       return `◇ ${label.name}`
     case 'detached':
       return 'HEAD détachée'
+    case 'stash':
+      return `≡ ${label.name}`
   }
 }
 

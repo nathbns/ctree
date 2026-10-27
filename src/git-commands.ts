@@ -59,11 +59,21 @@ export const status = (): string[] => [
 
 export const worktrees = (): string[] => ['worktree', 'list', '--porcelain']
 
+/** The fields every commit is read with: `parseLog` reads them back. */
+const COMMIT_FORMAT = `--format=${['%H', '%P', '%an', '%ae', '%at', '%s'].join('%x1f')}`
+
+/**
+ * The history the graph draws: HEAD and every branch, remote branch and tag,
+ * or under focus one ref's, its first parents alone when asked.
+ */
+const historyOf = (scope: LogScope, withHead: boolean): string[] =>
+  scope.kind === 'focus'
+    ? [...(scope.isFirstParent ? ['--first-parent'] : []), scope.ref]
+    : [...(withHead ? ['HEAD'] : []), '--branches', '--remotes', '--tags']
+
 /**
  * One page of history, newest first, topologically ordered so a parent never
  * comes before its children. One commit more than asked tells if more exist.
- * All branches, or under focus one ref's history, its first parents alone
- * when asked.
  */
 export const log = (options: {
   skip: number
@@ -71,13 +81,29 @@ export const log = (options: {
   withHead: boolean
   scope: LogScope
 }): string[] => [
-  'log', '--topo-order', '-z', '--no-color', '--no-decorate',
-  `--format=${['%H', '%P', '%an', '%ae', '%at', '%s'].join('%x1f')}`,
+  'log', '--topo-order', '-z', '--no-color', '--no-decorate', COMMIT_FORMAT,
   `--skip=${options.skip}`, `-n${options.count + 1}`,
-  ...(options.scope.kind === 'focus'
-    ? [...(options.scope.isFirstParent ? ['--first-parent'] : []), options.scope.ref]
-    : [...(options.withHead ? ['HEAD'] : []), '--branches', '--remotes', '--tags']),
+  ...historyOf(options.scope, options.withHead),
   '--',
+]
+
+/** Results one search reads at most, per kind of match. */
+export const SEARCH_LIMIT = 200
+
+/** What a search matches: the message, the author, or a changed file's path. */
+export type SearchBy = { kind: 'message' | 'author' | 'path'; text: string }
+
+/**
+ * Commits of the graph's history matching `by`, ignoring case: the text as
+ * is in the message or the author, anywhere in a path of a changed file.
+ */
+export const searchLog = (by: SearchBy, scope: LogScope, withHead: boolean): string[] => [
+  'log', '-z', '--no-color', '--no-decorate', COMMIT_FORMAT, `-n${SEARCH_LIMIT}`,
+  ...(by.kind === 'message' ? ['--regexp-ignore-case', '--fixed-strings', `--grep=${by.text}`] : []),
+  ...(by.kind === 'author' ? ['--regexp-ignore-case', '--fixed-strings', `--author=${by.text}`] : []),
+  ...historyOf(scope, withHead),
+  '--',
+  ...(by.kind === 'path' ? [`:(glob,icase)**/*${by.text.replace(/[*?[\\]/g, '\\$&')}*`] : []),
 ]
 
 /**
@@ -107,9 +133,7 @@ export const mergedTags = (): string[] => [
 
 /** The commits of a range (`origin/main..HEAD`, or `HEAD --not --remotes`), 50 at most. */
 export const rangeLog = (range: readonly string[]): string[] => [
-  'log', '-z', '--no-color', '--no-decorate',
-  `--format=${['%H', '%P', '%an', '%ae', '%at', '%s'].join('%x1f')}`,
-  '-n51', ...range, '--',
+  'log', '-z', '--no-color', '--no-decorate', COMMIT_FORMAT, '-n51', ...range, '--',
 ]
 
 export const sshCommand = (): string[] => ['config', '--get', 'core.sshCommand']
@@ -120,6 +144,11 @@ export const refState = (): string[] => [
 ]
 
 export const stashList = (): string[] => ['stash', 'list', '--format=%gd%x1f%s']
+
+/** Every stash with its parents, newest first: `parseStashes` reads it. */
+export const stashes = (): string[] => [
+  'stash', 'list', '-z', `--format=${['%H', '%P', '%an', '%ae', '%at', '%gd', '%s'].join('%x1f')}`,
+]
 
 /** What `git clean` with these flags would delete, deleting nothing. */
 export const cleanDryRun = (flags: { dirs: boolean; ignored: 'no' | 'also' | 'only' }, paths: readonly string[]): string[] => [
@@ -134,9 +163,7 @@ export const countRange = (from: string, to: string): string[] => ['rev-list', '
 
 /** Some commits by hash, in the order given. */
 export const commitsByHash = (hashes: readonly string[]): string[] => [
-  'log', '--no-walk=unsorted', '-z', '--no-color', '--no-decorate',
-  `--format=${['%H', '%P', '%an', '%ae', '%at', '%s'].join('%x1f')}`,
-  ...hashes, '--',
+  'log', '--no-walk=unsorted', '-z', '--no-color', '--no-decorate', COMMIT_FORMAT, ...hashes, '--',
 ]
 
 /** A resolved commit, or exit 1: `rev-parse --verify` of `<rev>^{commit}`. */
@@ -174,6 +201,20 @@ export const commitFileDiff = (
   oldPath?: string,
 ): string[] => [
   'diff', ...DIFF_FLAGS, parent ?? EMPTY_TREE, hash, '--', ...(oldPath ? [oldPath] : []), path,
+]
+
+/** What changes from one commit to another, or to the working tree when `to` is null: counts, then statuses. */
+export const rangeNumstat = (from: string, to: string | null): string[] => [
+  'diff', '-z', '-M', '--numstat', '--no-ext-diff', '--no-textconv', from, ...(to ? [to] : []), '--',
+]
+
+export const rangeNameStatus = (from: string, to: string | null): string[] => [
+  'diff', '-z', '-M', '--name-status', '--no-ext-diff', from, ...(to ? [to] : []), '--',
+]
+
+/** One file from one commit to another (or to the working tree). */
+export const rangeFileDiff = (from: string, to: string | null, path: string, oldPath?: string): string[] => [
+  'diff', ...DIFF_FLAGS, from, ...(to ? [to] : []), '--', ...(oldPath ? [oldPath] : []), path,
 ]
 
 /** One tracked file of the working tree against HEAD. */

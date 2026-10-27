@@ -11,6 +11,7 @@ import {
   parseNumstat,
   parseRefs,
   parseRepoInfo,
+  parseStashes,
   parseStatus,
   parseWorktrees,
 } from './git-parse'
@@ -48,13 +49,14 @@ export async function loadSnapshot(
     }
 
     const at = { cwd: repo.toplevel }
-    const [symbolic, commit, refs, status, trees, email] = await Promise.all([
+    const [symbolic, commit, refs, status, trees, email, stashes] = await Promise.all([
       git(Cmd.headRef(), at),
       git(Cmd.headCommit(), at),
       git(Cmd.refs(), at),
       git(Cmd.status(), at),
       git(Cmd.worktrees(), at),
       git(Cmd.userEmail(), at),
+      git(Cmd.stashes(), at),
     ])
     const head = parseHead(symbolic, commit)
     const refList = refs.code === 0 ? parseRefs(refs.stdout) : []
@@ -81,6 +83,7 @@ export async function loadSnapshot(
       scope,
       status: status.code === 0 ? parseStatus(status.stdout) : [],
       worktrees: trees.code === 0 ? parseWorktrees(trees.stdout) : [],
+      stashes: stashes.code === 0 ? parseStashes(stashes.stdout) : [],
       sessionCommits,
     }
   } catch (error) {
@@ -111,11 +114,11 @@ export async function loadCommits(
   return { commits: commits.slice(0, options.count), hasMore: commits.length > options.count }
 }
 
-/** The page after the commits `snapshot` holds, appended; none twice. */
-export async function loadMore(git: GitRunner, snapshot: RepoSnapshot): Promise<RepoSnapshot> {
+/** The `count` commits after the ones `snapshot` holds, appended; none twice. */
+export async function loadMore(git: GitRunner, snapshot: RepoSnapshot, count = Cmd.PAGE_SIZE): Promise<RepoSnapshot> {
   const page = await loadCommits(git, snapshot.repo.toplevel, {
     skip: snapshot.commits.length,
-    count: Cmd.PAGE_SIZE,
+    count,
     withHead: snapshot.head.hash !== null,
     scope: snapshot.scope,
   })
@@ -170,6 +173,20 @@ export async function loadCommitFiles(git: GitRunner, toplevel: string, commit: 
 
   if (statuses.code !== 0) {
     throw new Error(firstLine(statuses.stderr) || 'git diff-tree a échoué')
+  }
+
+  return joinChanges(parseNameStatus(statuses.stdout), counts.code === 0 ? parseNumstat(counts.stdout) : [])
+}
+
+/** What changes from one commit to another (or to the working tree when `to` is null), with line counts. */
+export async function loadRangeFiles(git: GitRunner, toplevel: string, from: string, to: string | null): Promise<FileChange[]> {
+  const [statuses, counts] = await Promise.all([
+    git(Cmd.rangeNameStatus(from, to), { cwd: toplevel }),
+    git(Cmd.rangeNumstat(from, to), { cwd: toplevel }),
+  ])
+
+  if (statuses.code !== 0) {
+    throw new Error(firstLine(statuses.stderr) || 'git diff a échoué')
   }
 
   return joinChanges(parseNameStatus(statuses.stdout), counts.code === 0 ? parseNumstat(counts.stdout) : [])
@@ -236,6 +253,13 @@ export async function loadCommitDiff(
   const result = await git(Cmd.commitFileDiff(commit.hash, commit.parents[0], change.path, change.oldPath), {
     cwd: toplevel,
   })
+
+  return diffOf(result.stdout)
+}
+
+/** One file from one commit to another (or to the working tree). */
+export async function loadRangeDiff(git: GitRunner, toplevel: string, from: string, to: string | null, change: FileChange): Promise<Diff> {
+  const result = await git(Cmd.rangeFileDiff(from, to, change.path, change.oldPath), { cwd: toplevel })
 
   return diffOf(result.stdout)
 }

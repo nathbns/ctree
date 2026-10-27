@@ -8,6 +8,7 @@ import type {
   HeadState,
   Ref,
   RepoInfo,
+  Stash,
   StatusEntry,
   Worktree,
 } from './types'
@@ -69,6 +70,24 @@ export function parseLog(stdout: string): Commit[] {
   }
 
   return commits
+}
+
+/** `stash list -z --format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%gd%x1f%s`. */
+export function parseStashes(stdout: string): Stash[] {
+  const stashes: Stash[] = []
+
+  for (const record of stdout.split('\0')) {
+    const [hash, parents, author, email, time, selector, ...subject] = record.replace(/^\n+/, '').split(FIELD)
+    const base = parents?.split(' ')[0]
+
+    if (!hash || !/^[0-9a-f]{40,64}$/.test(hash) || !base || !selector) {
+      continue
+    }
+
+    stashes.push({ hash, base, selector, author: author ?? '', email: email ?? '', time: Number(time) || 0, subject: subject.join(FIELD) })
+  }
+
+  return stashes
 }
 
 /** `for-each-ref` with the fields of `refs()`, one ref per line. */

@@ -6,6 +6,7 @@
 
 import {
   type Action,
+  applyStashAction,
   nextVersion,
   planPush,
   switchAction,
@@ -34,6 +35,8 @@ import {
   loadCommitDiff,
   loadCommitFiles,
   loadMore,
+  loadRangeDiff,
+  loadRangeFiles,
   loadSnapshot,
   loadStatus,
   loadTips,
@@ -44,12 +47,17 @@ import { type Fold, foldHolding } from '../src/overview'
 import {
   buildView,
   explainCommitPrompt,
+  explainComparePrompt,
   explainFilePrompt,
   explainRangePrompt,
+  explainStashPrompt,
   explainWipPrompt,
+  stashCommit,
   type View,
   WIP,
 } from '../src/rows'
+import { search, type SearchResult } from '../src/search'
+import { countRange } from '../src/git-commands'
 import type { Commit, FileChange, GitResult, GitRunner, LogScope, RepoSnapshot, Snapshot } from '../src/types'
 
 export type Host = {
@@ -70,6 +78,8 @@ export type Host = {
   focus: (key: string) => Promise<void>
   /** Puts text in the prompt without sending it; false where no prompt took it. */
   fill: (text: string) => Promise<boolean>
+  /** Puts text on the person's clipboard; false where nothing took it. */
+  copy: (text: string) => Promise<boolean>
   baseline: {
     get: () => Promise<readonly string[] | null>
     set: (tips: readonly string[]) => Promise<void>
@@ -113,7 +123,28 @@ export type DiffMode = {
   commit: Commit | null
   change: FileChange
   diff: Diff | { kind: 'loading' } | { kind: 'error'; message: string }
+  /** A file of a comparison: diffed from one commit to the other, and the comparison Escape goes back to. */
+  compare?: CompareMode
 }
+
+/** Two commits compared (`m`, then `d`): what changes from the older to the newer. */
+export type CompareMode = {
+  kind: 'compare'
+  from: Commit
+  /** null: the working tree. */
+  to: Commit | null
+  files: Unfolded
+  /** Commits `to` has that `from` lacks, and the other way round; null for the working tree or until read. */
+  counts: { ahead: number; behind: number } | null
+  /** The file the ring starts on: the one whose diff was last opened. */
+  ring: number
+}
+
+/** What a search found, listed: Enter on one shows it in the graph. */
+export type SearchMode = { kind: 'search'; query: string; result: SearchResult | null; error: string | null }
+
+/** The search the graph highlights once its list is left: `n` goes to the next. */
+export type ActiveSearch = { query: string; hashes: readonly string[]; index: number }
 
 /** The band in place of the keys while a change waits for its confirmation. */
 export type Band =
@@ -122,6 +153,7 @@ export type Band =
   /** Several branches at the commit: each choice is its own confirmation. */
   | { kind: 'choose'; title: string; actions: Action[] }
   | { kind: 'tag-form'; commit: Commit; name: string; message: string; error: string | null }
+  | { kind: 'search-form'; query: string }
   | { kind: 'running'; action: Action }
   | { kind: 'info'; title: string; lines: string[]; isError: boolean }
   /** One of Claude's commands, held while the person answers whether it runs. */
@@ -137,7 +169,7 @@ export type Model = {
   selected: string | null
   /** First list row the window shows. */
   top: number
-  mode: { kind: 'list' } | DiffMode | { kind: 'journal' } | SessionMode
+  mode: { kind: 'list' } | DiffMode | { kind: 'journal' } | SessionMode | CompareMode | SearchMode | { kind: 'help' }
   /** A line shown in place of the header until the next action. */
   notice: string | null
   /** The next Escape returns to the prompt without closing the pane. */
@@ -151,6 +183,9 @@ export type Model = {
   scope: LogScope
   /** Claude's git commands that changed something, newest first. */
   journal: readonly JournalEntry[]
+  /** The commit marked to compare another with (`m`). */
+  mark: string | null
+  search: ActiveSearch | null
 }
 
 export const INITIAL: Model = {
@@ -169,6 +204,8 @@ export const INITIAL: Model = {
   openedFolds: new Set(),
   scope: { kind: 'all' },
   journal: [],
+  mark: null,
+  search: null,
 }
 
 /** Rows from the window's end at which the next page starts loading. */
@@ -177,6 +214,9 @@ const PREFETCH_ROWS = 15
 const AUTO_FILL_COMMITS = 2000
 export const REFRESH_DEBOUNCE_MS = 150
 const NOTICE_MS = 8000
+/** Jumping to a commit past the pages loaded loads this many at a time, up to REVEAL_LIMIT; past it, the commit is shown in focus. */
+const REVEAL_PAGE = 1000
+const REVEAL_LIMIT = 5000
 const PUSH_TIMEOUT_MS = 120_000
 const WRITE_TIMEOUT_MS = 30_000
 
@@ -197,6 +237,7 @@ export function createController(host: Host) {
   let pending: { scope: 'all' | 'status'; timer: { cancel: () => void } } | null = null
   let noticeTimer: { cancel: () => void } | null = null
   let running: Promise<void> = Promise.resolve()
+  let paging: Promise<void> | null = null
 
   const set = (patch: Partial<Model>) => {
     model = { ...model, ...patch }
@@ -206,6 +247,17 @@ export function createController(host: Host) {
   const repoOf = () => (model.snapshot?.kind === 'repo' ? model.snapshot : null)
 
   const hasWip = () => (repoOf()?.status.length ?? 0) > 0
+
+  /** A loaded commit, or a stash, by hash. */
+  const commitOf = (hash: string | null | undefined): Commit | null => {
+    const repo = repoOf()
+
+    if (!repo || !hash) return null
+
+    const stash = repo.stashes.find(one => one.hash === hash)
+
+    return repo.commits.find(one => one.hash === hash) ?? (stash ? stashCommit(stash) : null)
+  }
 
   const itemsOf = (from: Model = model): Item[] =>
     from.view ? flatten(from.view.commits, from.unfolded, from.more, from.view.folds) : []
@@ -305,7 +357,7 @@ export function createController(host: Host) {
       return
     }
 
-    const known = new Set(snapshot.commits.map(commit => commit.hash))
+    const known = new Set([...snapshot.commits, ...snapshot.stashes].map(commit => commit.hash))
     const unfolded = new Map([...before.unfolded].filter(([under]) => under === WIP ? snapshot.status.length > 0 : known.has(under)))
 
     if (unfolded.has(WIP)) {
@@ -348,29 +400,35 @@ export function createController(host: Host) {
     }
   }
 
-  /** Loads the next page of history. */
-  const more = async () => {
+  /** Loads the next page of history (`count` commits). */
+  const more = (count?: number): Promise<void> => {
     const repo = repoOf()
 
     if (!repo || model.more !== 'available') {
-      return
+      return paging ?? Promise.resolve()
     }
 
     const ticket = generation
 
     set({ more: 'loading' })
 
-    try {
-      const next = await loadMore(host.git, repo)
+    paging = (async () => {
+      try {
+        const next = await loadMore(host.git, repo, count)
 
-      if (ticket === generation) {
-        model = { ...model, snapshot: next, view: viewOf(next), more: next.hasMore ? 'available' : 'none' }
-        host.invalidate()
-        fill()
+        if (ticket === generation) {
+          model = { ...model, snapshot: next, view: viewOf(next), more: next.hasMore ? 'available' : 'none' }
+          host.invalidate()
+          fill()
+        }
+      } catch {
+        set({ more: 'available' })
+      } finally {
+        paging = null
       }
-    } catch {
-      set({ more: 'available' })
-    }
+    })()
+
+    return paging
   }
 
   const unfoldWip = async () => {
@@ -425,7 +483,7 @@ export function createController(host: Host) {
       return unfoldWip()
     }
 
-    const commit = repo.commits.find(one => one.hash === under)
+    const commit = commitOf(under)
 
     if (!commit) {
       return setUnfolded(under, null)
@@ -438,23 +496,25 @@ export function createController(host: Host) {
     }
   }
 
-  /** Shows one file's diff in place of the list. */
-  const openDiff = async (under: string, change: FileChange) => {
+  /** Shows one file's diff in place of the list (or of the comparison it belongs to). */
+  const openDiff = async (under: string, change: FileChange, compare?: CompareMode) => {
     const repo = repoOf()
 
     if (!repo) {
       return
     }
 
-    const commit = under === WIP ? null : repo.commits.find(one => one.hash === under) ?? null
-    const mode: DiffMode = { kind: 'diff', under, commit, change, diff: { kind: 'loading' } }
+    const commit = under === WIP ? null : commitOf(under)
+    const mode: DiffMode = { kind: 'diff', under, commit, change, diff: { kind: 'loading' }, ...(compare ? { compare } : {}) }
 
     set({ mode, notice: null, isEscapeKept: false })
 
     try {
-      const diff = commit
-        ? await loadCommitDiff(host.git, repo.repo.toplevel, commit, change)
-        : await loadWipDiff(host.git, repo.repo.toplevel, change)
+      const diff = compare
+        ? await loadRangeDiff(host.git, repo.repo.toplevel, compare.from.hash, compare.to?.hash ?? null, change)
+        : commit
+          ? await loadCommitDiff(host.git, repo.repo.toplevel, commit, change)
+          : await loadWipDiff(host.git, repo.repo.toplevel, change)
 
       if (model.mode === mode) {
         set({ mode: { ...mode, diff } })
@@ -490,12 +550,85 @@ export function createController(host: Host) {
     }
   }
 
-  /** The commit of the selected row, or of the file row under it. */
+  /** Leaves a view: a comparison's file for the comparison, the ring back on it; any other for the list. */
+  const leave = () => {
+    const mode = model.mode
+
+    if (mode.kind === 'diff' && mode.compare) {
+      const index = mode.compare.files.state === 'ready' ? mode.compare.files.files.indexOf(mode.change) : -1
+
+      set({ mode: { ...mode.compare, ring: Math.max(0, index) }, notice: null })
+
+      if (index >= 0) void host.focus(`cmp-${index}`).catch(() => undefined)
+
+      return
+    }
+
+    set({ mode: { kind: 'list' }, notice: null })
+  }
+
+  /** The commit (or stash) of the selected row, or of the file row under it. */
   const selectedCommit = (): Commit | null => {
     const item = itemsOf().find(one => one.key === model.selected)
     const hash = item?.kind === 'commit' ? item.commit.hash : item?.kind === 'file' || item?.kind === 'note' ? item.under : null
 
-    return repoOf()?.commits.find(commit => commit.hash === hash) ?? null
+    return commitOf(hash)
+  }
+
+  /** The selected commit when it is a stash, and the notice for the keys a stash has no use for. */
+  const isStashSelected = () => selectedCommit()?.stash !== undefined
+  const stashNotice = () => showNotice('Un stash : ⏎ ses fichiers, a pour l’appliquer, e pour l’expliquer', false)
+
+  /**
+   * Selects a commit wherever it is: in a fold (opened), past the pages
+   * loaded (loaded up to it), out of the history drawn (all branches drawn
+   * again, else the commit in focus). The ring follows.
+   */
+  const reveal = async (hash: string, isRetry = false): Promise<void> => {
+    const repo = repoOf()
+
+    if (!repo) return
+
+    const stash = repo.stashes.find(one => one.hash === hash)
+    const needed = stash?.base ?? hash
+    const isLoaded = () => repoOf()?.commits.some(commit => commit.hash === needed) ?? false
+    const loaded = () => repoOf()?.commits.length ?? 0
+
+    // Page on while pages come, the one in flight first.
+    for (let before = -1; !isLoaded() && loaded() !== before && loaded() < REVEAL_LIMIT; ) {
+      before = loaded()
+      await more(REVEAL_PAGE)
+    }
+
+    if (!isLoaded()) {
+      if (isRetry) return showNotice('Commit introuvable dans l’historique', false)
+
+      const scope: LogScope = model.scope.kind === 'focus' ? { kind: 'all' } : { kind: 'focus', ref: needed, label: needed.slice(0, 7), isFirstParent: false }
+
+      set({ scope })
+      running = refresh('all')
+      await running
+      await reveal(hash, true)
+
+      if (scope.kind === 'focus') {
+        showNotice('Commit loin dans l’historique : montré en focus · f pour revenir à toutes les branches', false)
+      }
+
+      return
+    }
+
+    const fold = model.view ? foldHolding(model.view.folds, hash) : undefined
+    const key = commitKey(hash)
+
+    if (fold) {
+      rebuild({ openedFolds: new Set([...model.openedFolds, fold.id]) }, key)
+    } else {
+      const items = itemsOf()
+
+      select(Math.max(0, items.findIndex(item => item.key === key)), items)
+    }
+
+    void host.focus(key).catch(() => undefined)
   }
 
   /** Draws the loaded snapshot again under new view settings, the selection carried. */
@@ -606,6 +739,7 @@ export function createController(host: Host) {
     items: () => itemsOf(),
     selectedIndex: () => indexOf(model.selected, itemsOf()),
     hasWip,
+    isStashSelected,
 
     /** Records which commits the refs point at as the session starts. */
     async recordBaseline() {
@@ -752,9 +886,9 @@ export function createController(host: Host) {
       if (item.kind === 'file') return openDiff(item.under, item.change)
     },
 
-    /** q, and Escape in the diff view: back to the list. */
+    /** q, and Escape in the diff view: back to the list, or to the comparison the file belongs to. */
     back() {
-      set({ mode: { kind: 'list' }, notice: null })
+      leave()
     },
 
     /** l: Claude's git commands this session, each one undoable. */
@@ -964,7 +1098,7 @@ export function createController(host: Host) {
       const text =
         model.mode.kind === 'session'
           ? model.mode.data && prDescriptionPrompt(model.mode.data)
-          : promptFor(model, repo.commits, itemsOf(), repo.status.length)
+          : promptFor(model, commitOf, itemsOf(), repo.status.length)
 
       if (text === null) {
         return
@@ -994,6 +1128,8 @@ export function createController(host: Host) {
       let next: LogScope = { kind: 'all' }
 
       if (scope.kind === 'all') {
+        if (isStashSelected()) return stashNotice()
+
         const target = focusTarget()
 
         if (!target || !(isSafeRefName(target.ref) || /^[0-9a-f]{40,64}$/.test(target.ref))) {
@@ -1009,6 +1145,181 @@ export function createController(host: Host) {
       running = refresh('all')
     },
 
+    /** h: every key, and what the graph's marks mean. */
+    openHelp() {
+      set({ mode: { kind: 'help' }, notice: null, isEscapeKept: false })
+    },
+
+    /** i: back to HEAD, wherever the list was scrolled to. */
+    async jumpHead() {
+      const head = repoOf()?.head.hash
+
+      if (!head) return showNotice('Pas encore de commit', false)
+
+      await reveal(head)
+    },
+
+    /** y: the selected commit's full hash on the clipboard. */
+    async copyHash() {
+      const commit = selectedCommit()
+
+      if (!commit) return showNotice('Sélectionne un commit pour copier son hash', false)
+
+      const isCopied = await host.copy(commit.hash).catch(() => false)
+
+      showNotice(isCopied ? `✓ Copié : ${commit.hash}` : 'Le presse-papiers n’a rien pris ici', false)
+    },
+
+    /** m: marks the selected commit to compare another with, or takes the mark off. */
+    toggleMark() {
+      const commit = selectedCommit()
+
+      if (!commit) return showNotice('Sélectionne un commit à marquer', false)
+
+      if (model.mark === commit.hash) {
+        set({ mark: null })
+        return showNotice('Marque retirée', false)
+      }
+
+      set({ mark: commit.hash })
+      showNotice(`⚑ ${commit.hash.slice(0, 7)} marqué · sélectionne un autre commit, puis d pour comparer`, false)
+    },
+
+    /** d: the selected commit (or the uncommitted changes) compared with the mark, else with HEAD. */
+    async beginCompare() {
+      const repo = repoOf()
+
+      if (!repo) return
+
+      const isWip = model.selected === WIP_KEY
+      const selected = isWip ? null : selectedCommit()
+      const base = commitOf(model.mark ?? repo.head.hash)
+      const howTo = 'Marque un commit avec m, puis d sur un autre pour les comparer'
+
+      if (!isWip && !selected) return showNotice('Sélectionne un commit à comparer', false)
+      if (!base) return showNotice(model.mark ? 'Le commit marqué n’est plus dans le graphe' : howTo, false)
+      if (selected?.hash === base.hash) return showNotice(model.mark ? 'Sélectionne un autre commit que la marque, puis d' : howTo, false)
+
+      // The older first, so the comparison reads forward.
+      const [from, to] = selected && selected.time < base.time ? [selected, base] : [base, selected]
+      const mode: CompareMode = { kind: 'compare', from, to, files: { state: 'loading' }, counts: null, ring: 0 }
+      const toplevel = repo.repo.toplevel
+      const count = async (a: string, b: string) => {
+        const result = await host.git(countRange(a, b), { cwd: toplevel })
+
+        return result.code === 0 ? Number(result.stdout.trim()) || 0 : null
+      }
+
+      set({ mode, notice: null, isEscapeKept: false })
+
+      try {
+        const [files, ahead, behind] = await Promise.all([
+          loadRangeFiles(host.git, toplevel, from.hash, to?.hash ?? null),
+          to ? count(from.hash, to.hash) : null,
+          to ? count(to.hash, from.hash) : null,
+        ])
+
+        if (model.mode === mode) {
+          set({ mode: { ...mode, files: { state: 'ready', files }, counts: ahead !== null && behind !== null ? { ahead, behind } : null } })
+
+          // The ring onto the first file: Enter opens it.
+          if (files.length > 0) void host.focus('cmp-0').catch(() => undefined)
+        }
+      } catch (error) {
+        if (model.mode === mode) set({ mode: { ...mode, files: { state: 'error', message: messageOf(error) } } })
+      }
+    },
+
+    /** Enter on a file of the comparison: its diff from one commit to the other. */
+    openCompareFile(index: number) {
+      const mode = model.mode
+
+      if (mode.kind !== 'compare' || mode.files.state !== 'ready') return
+
+      const change = mode.files.files[index]
+
+      if (change) void openDiff(mode.to?.hash ?? WIP, change, mode)
+    },
+
+    /** g: the search field, holding the last search. */
+    beginSearch() {
+      if (!repoOf()) return
+
+      openBand({ kind: 'search-form', query: model.search?.query ?? '' }, 'search-query')
+    },
+
+    /** What the person types in the search field; not drawn again. */
+    setSearchQuery(value: string) {
+      const band = model.action
+
+      if (band?.kind === 'search-form') model = { ...model, action: { ...band, query: value } }
+    },
+
+    /** Enter in the search field: the history searched, what it found listed. */
+    async submitSearch(value?: string) {
+      const repo = repoOf()
+      const band = model.action
+
+      if (!repo || band?.kind !== 'search-form') return
+
+      const query = (value ?? band.query).trim()
+
+      if (!query) return closeBand()
+
+      const mode: SearchMode = { kind: 'search', query, result: null, error: null }
+
+      model = { ...model, action: null }
+      set({ mode, notice: null, isEscapeKept: false })
+
+      try {
+        const result = await search(host.git, repo, query)
+
+        if (model.mode !== mode) return
+
+        set({ mode: { ...mode, result }, search: { query, hashes: result.hits.map(hit => hit.commit.hash), index: -1 } })
+
+        const first = result.hits[0]
+
+        if (first) void host.focus(`hit-${first.commit.hash}`).catch(() => undefined)
+      } catch (error) {
+        if (model.mode === mode) set({ mode: { ...mode, error: messageOf(error) } })
+      }
+    },
+
+    /** Enter on a result: the graph again, that commit selected. */
+    async openHit(hash: string) {
+      const search = model.search
+
+      set({ mode: { kind: 'list' }, ...(search ? { search: { ...search, index: search.hashes.indexOf(hash) } } : {}) })
+      await reveal(hash)
+    },
+
+    /** n: the search's next result, in the graph. */
+    async nextHit() {
+      const search = model.search
+
+      if (!search || search.hashes.length === 0) return showNotice('Aucune recherche en cours : g pour chercher', false)
+
+      const index = (search.index + 1) % search.hashes.length
+      const hash = search.hashes[index]
+
+      set({ search: { ...search, index } })
+
+      if (hash) await reveal(hash)
+    },
+
+    /** a: the selected stash applied to the working tree, once confirmed. */
+    beginApplyStash() {
+      const repo = repoOf()
+      const commit = selectedCommit()
+      const stash = repo?.stashes.find(one => one.hash === commit?.hash)
+
+      if (!repo) return
+      if (!stash) return showNotice('Sélectionne un stash (≡) pour l’appliquer', false)
+
+      openBand({ kind: 'confirm', action: applyStashAction(stash, repo.status.length) }, 'act-n')
+    },
+
     /** c: switch to the selected commit's branch (a choice when it has several). */
     beginSwitch() {
       const repo = repoOf()
@@ -1016,6 +1327,7 @@ export function createController(host: Host) {
 
       if (!repo) return
       if (!commit) return showNotice('Sélectionne un commit pour changer de branche', false)
+      if (commit.stash) return stashNotice()
 
       const actions = switchTargets(repo, commit.hash).map(target => switchAction(repo, target))
       const [only] = actions
@@ -1032,6 +1344,7 @@ export function createController(host: Host) {
 
       if (!repo) return
       if (!commit) return showNotice('Sélectionne un commit à tagger', false)
+      if (commit.stash) return stashNotice()
 
       const tags = repo.refs.filter(ref => ref.kind === 'tag').map(ref => ref.name)
 
@@ -1159,7 +1472,13 @@ export function createController(host: Host) {
       }
 
       if (model.mode.kind !== 'list') {
-        set({ mode: { kind: 'list' } })
+        leave()
+        return 'back'
+      }
+
+      // The search's highlight goes first.
+      if (model.search) {
+        set({ search: null, notice: null })
         return 'back'
       }
 
@@ -1173,12 +1492,27 @@ export function createController(host: Host) {
   }
 }
 
-/** The question for the selected row, or for the file the diff view shows. */
-function promptFor(model: Model, commits: readonly Commit[], items: readonly Item[], wipCount: number): string | null {
+/** The question for the selected row, or for the file the diff view shows, or the comparison. */
+function promptFor(
+  model: Model,
+  commitOf: (hash: string) => Commit | null,
+  items: readonly Item[],
+  wipCount: number,
+): string | null {
   if (model.mode.kind === 'diff') {
-    const { commit, change } = model.mode
+    const { commit, change, compare } = model.mode
+
+    if (compare) return explainComparePrompt(compare.from, compare.to, change.path)
 
     return commit ? explainFilePrompt(commit, change.path) : explainWipPrompt(wipCount, change.path)
+  }
+
+  if (model.mode.kind === 'compare') {
+    return explainComparePrompt(model.mode.from, model.mode.to)
+  }
+
+  if (model.mode.kind !== 'list') {
+    return null
   }
 
   if (model.selected === WIP_KEY) {
@@ -1188,11 +1522,11 @@ function promptFor(model: Model, commits: readonly Commit[], items: readonly Ite
   const item = items.find(one => one.key === model.selected)
 
   if (!item) return null
-  if (item.kind === 'commit') return explainCommitPrompt(item.commit)
+  if (item.kind === 'commit') return item.commit.stash ? explainStashPrompt(item.commit) : explainCommitPrompt(item.commit)
   if (item.kind === 'fold') return explainRangePrompt(item.fold)
 
   if (item.kind === 'file') {
-    const commit = commits.find(one => one.hash === item.under)
+    const commit = commitOf(item.under)
 
     return commit ? explainFilePrompt(commit, item.change.path) : explainWipPrompt(wipCount, item.change.path)
   }

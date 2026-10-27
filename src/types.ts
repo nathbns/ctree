@@ -14,6 +14,22 @@ export type Commit = {
    * the branch's own line): still drawn ○.
    */
   isMerge?: true
+  /** A stash drawn on the commit it was made on: its selector (`stash@{0}`). */
+  stash?: string
+}
+
+/** A stash entry: its own commit, whose first parent is where HEAD stood. */
+export type Stash = {
+  hash: string
+  /** The commit it was made on. */
+  base: string
+  /** `stash@{0}`, newest first. */
+  selector: string
+  author: string
+  email: string
+  time: number
+  /** `WIP on main: 1a2b3c4 …`, or `On main: <message>`. */
+  subject: string
 }
 
 export type RefKind = 'branch' | 'remote' | 'tag'
@@ -98,6 +114,7 @@ export type RepoSnapshot = {
   scope: LogScope
   status: readonly StatusEntry[]
   worktrees: readonly Worktree[]
+  stashes: readonly Stash[]
   /** Commits this session created (rebased ones included). */
   sessionCommits: readonly string[]
 }

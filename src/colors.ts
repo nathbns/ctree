@@ -25,6 +25,9 @@ export const DASHED_COLOR = 'inactive'
 
 export const TAG_COLOR = '#D7BA7D'
 
+/** A stash's node and label: set apart from the branches' colours. */
+export const STASH_COLOR = '#C586C0'
+
 /**
  * The colour of every path of `graph`, by path id.
  *

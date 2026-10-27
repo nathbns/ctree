@@ -5,11 +5,11 @@
 import * as Cmd from './git-commands'
 import { FIELD } from './git-commands'
 import { parseLog } from './git-parse'
-import type { Commit, GitRunner, RepoSnapshot } from './types'
+import type { Commit, GitRunner, RepoSnapshot, Stash } from './types'
 
 /** A change ready to confirm: what runs, and what the pane and Claude are told. */
 export type Action = {
-  kind: 'switch' | 'tag' | 'push' | 'undo'
+  kind: 'switch' | 'tag' | 'push' | 'undo' | 'stash'
   /** The arguments after `git`. */
   args: string[]
   /** Further commands run in order once `args` succeeded; the first failure stops them. */
@@ -96,6 +96,26 @@ export function switchAction(snapshot: RepoSnapshot, target: SwitchTarget): Acti
         note: `[ctree] Via le panneau, la personne a détaché HEAD sur ${short} (git switch --detach ${short}).`,
       }
     }
+  }
+}
+
+/** A stash's changes put back in the working tree, the stash kept (`apply`, never `pop`). */
+export function applyStashAction(stash: Stash, dirty: number): Action {
+  const short = stash.hash.slice(0, 7)
+
+  return {
+    kind: 'stash',
+    args: ['stash', 'apply', stash.hash],
+    title: `≡ Appliquer ${stash.selector} « ${stash.subject} »`,
+    details: [
+      'ses modifications reviennent dans l’arbre de travail ; le stash reste dans la liste',
+      ...(dirty > 0 ? [`${plural(dirty, 'modification non commitée', 'modifications non commitées')} : git refuse s’il devait les écraser`] : []),
+    ],
+    confirm: 'appliquer',
+    success: `✓ ${stash.selector} appliqué`,
+    note:
+      `[ctree] Via le panneau, la personne a appliqué le stash ${stash.selector} « ${stash.subject} » ` +
+      `(git stash apply ${short}) : ses modifications sont maintenant dans l’arbre de travail, le stash est gardé.`,
   }
 }
 

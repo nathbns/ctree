@@ -43,6 +43,7 @@ export const SNAPSHOT: RepoSnapshot = {
     { path: 'untracked.txt', code: '?' },
   ],
   worktrees: [{ path: '/work/demo', head: h('3'), branch: 'main' }],
+  stashes: [],
   sessionCommits: [],
 }
 

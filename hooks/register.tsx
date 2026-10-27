@@ -95,6 +95,7 @@ function hostOf($: EngineInterface, siteId: () => string): Host {
 
       return filled.isFilled
     },
+    copy: async text => (await $.ui.copy({ text })).isCopied,
     baseline: {
       get: async () => (await $.state.get(BASELINE)).value ?? null,
       set: async tips => {
