@@ -136,7 +136,8 @@ describe('the commands are reads', () => {
       Cmd.stashes(),
       Cmd.searchLog({ kind: 'message', text: '--exec=x' }, { kind: 'all' }, true),
       Cmd.searchLog({ kind: 'author', text: 'léa' }, { kind: 'focus', ref: 'refs/heads/main', label: 'main', isFirstParent: true }, true),
-      Cmd.searchLog({ kind: 'path', text: 'src/*.ts' }, { kind: 'all' }, false),
+      Cmd.searchLog({ kind: 'path', text: 'src/*.ts', isExact: false }, { kind: 'all' }, false),
+      Cmd.searchLog({ kind: 'path', text: './src/a.ts', isExact: true }, { kind: 'all' }, false),
       Cmd.rangeNumstat(A, B),
       Cmd.rangeNameStatus(A, null),
       Cmd.rangeFileDiff(A, B, 'x', 'y'),
@@ -150,7 +151,8 @@ describe('the commands are reads', () => {
 
   test('a search keeps the text inside its option, and a path search reads it literally', () => {
     expect(Cmd.searchLog({ kind: 'message', text: '-p' }, { kind: 'all' }, true)).toContain('--grep=-p')
-    expect(Cmd.searchLog({ kind: 'path', text: 'a*[b]' }, { kind: 'all' }, true).at(-1)).toBe(':(glob,icase)**/*a\\*\\[b]*')
+    expect(Cmd.searchLog({ kind: 'path', text: 'a*[b]', isExact: false }, { kind: 'all' }, true).at(-1)).toBe(':(glob,icase)**/*a\\*\\[b]*')
+    expect(Cmd.searchLog({ kind: 'path', text: './src/a*.ts', isExact: true }, { kind: 'all' }, true).at(-1)).toBe(':(literal)src/a*.ts')
   })
 
   test('commands that write, or reads in a writing form, are refused', () => {

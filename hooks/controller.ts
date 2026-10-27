@@ -217,6 +217,8 @@ const NOTICE_MS = 8000
 /** Jumping to a commit past the pages loaded loads this many at a time, up to REVEAL_LIMIT; past it, the commit is shown in focus. */
 const REVEAL_PAGE = 1000
 const REVEAL_LIMIT = 5000
+/** A full read slower than this says, once, how a big repository reads faster. */
+const SLOW_READ_MS = 1500
 const PUSH_TIMEOUT_MS = 120_000
 const WRITE_TIMEOUT_MS = 30_000
 
@@ -238,6 +240,7 @@ export function createController(host: Host) {
   let noticeTimer: { cancel: () => void } | null = null
   let running: Promise<void> = Promise.resolve()
   let paging: Promise<void> | null = null
+  let isSlowSaid = false
 
   const set = (patch: Partial<Model>) => {
     model = { ...model, ...patch }
@@ -338,10 +341,17 @@ export function createController(host: Host) {
 
       const isSameScope = repo !== null && JSON.stringify(repo.scope) === JSON.stringify(model.scope)
       const count = Math.max(PAGE_SIZE, isSameScope ? repo.commits.length : 0)
+      const started = await host.now()
       const snapshot = await loadSnapshot(host.git, cwd, { count, baseline, scope: model.scope })
+      const elapsed = (await host.now()) - started
 
       if (ticket === generation) {
         adopt(snapshot, before)
+
+        if (elapsed > SLOW_READ_MS && !isSlowSaid && snapshot.kind === 'repo') {
+          isSlowSaid = true
+          showNotice(`Dépôt lent à lire (${(elapsed / 1000).toFixed(1).replace('.', ',')} s) · git commit-graph write --reachable l’accélère souvent`, false)
+        }
       }
     } catch (error) {
       if (ticket === generation) {

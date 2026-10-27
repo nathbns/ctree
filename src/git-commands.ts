@@ -31,6 +31,9 @@ export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
 export const PAGE_SIZE = 100
 
+/** The biggest page of history read at once. */
+export const MAX_PAGE = 1000
+
 export const repoInfo = (): string[] => [
   'rev-parse', '--path-format=absolute',
   '--show-toplevel', '--git-dir', '--git-common-dir',
@@ -90,12 +93,17 @@ export const log = (options: {
 /** Results one search reads at most, per kind of match. */
 export const SEARCH_LIMIT = 200
 
-/** What a search matches: the message, the author, or a changed file's path. */
-export type SearchBy = { kind: 'message' | 'author' | 'path'; text: string }
+/**
+ * What a search matches: the message, the author, or a changed file's path,
+ * `exact` (that file or folder, from the top) or anywhere in it.
+ */
+export type SearchBy = { kind: 'message' | 'author'; text: string } | { kind: 'path'; text: string; isExact: boolean }
 
 /**
  * Commits of the graph's history matching `by`, ignoring case: the text as
- * is in the message or the author, anywhere in a path of a changed file.
+ * is in the message or the author, in a path of a changed file. An exact
+ * path is what git's commit-graph filters answer fast; anywhere, it reads
+ * every commit's changes.
  */
 export const searchLog = (by: SearchBy, scope: LogScope, withHead: boolean): string[] => [
   'log', '-z', '--no-color', '--no-decorate', COMMIT_FORMAT, `-n${SEARCH_LIMIT}`,
@@ -103,7 +111,9 @@ export const searchLog = (by: SearchBy, scope: LogScope, withHead: boolean): str
   ...(by.kind === 'author' ? ['--regexp-ignore-case', '--fixed-strings', `--author=${by.text}`] : []),
   ...historyOf(scope, withHead),
   '--',
-  ...(by.kind === 'path' ? [`:(glob,icase)**/*${by.text.replace(/[*?[\\]/g, '\\$&')}*`] : []),
+  ...(by.kind === 'path'
+    ? [by.isExact ? `:(literal)${by.text.replace(/^\.?\/+/, '')}` : `:(glob,icase)**/*${by.text.replace(/[*?[\\]/g, '\\$&')}*`]
+    : []),
 ]
 
 /**

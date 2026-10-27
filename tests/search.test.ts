@@ -24,6 +24,8 @@ describe('searching', () => {
     if (line.includes('--no-walk')) return { code: 0, stdout: logOf([COMMITS[3]!]), stderr: '' }
     if (line.includes('--grep=')) return { code: 0, stdout: logOf([COMMITS[3]!, COMMITS[4]!]), stderr: '' }
     if (line.includes('--author=')) return { code: 0, stdout: logOf([COMMITS[4]!]), stderr: '' }
+    if (line.includes(':(literal)src/lanes.ts')) return { code: 0, stdout: logOf([COMMITS[4]!]), stderr: '' }
+    if (line.includes(':(literal)')) return { code: 0, stdout: '', stderr: '' }
     if (line.includes(':(glob,icase)')) return { code: 124, stdout: '', stderr: 'timed out' }
 
     return { code: 1, stdout: '', stderr: `unexpected ${line}` }
@@ -44,9 +46,15 @@ describe('searching', () => {
     expect(result.hits[0]?.commit.stash).toBe('stash@{0}')
     expect(result.missed).toEqual([])
 
-    const byPath = await search(git, SNAPSHOT, 'src/lanes.ts')
+    const exact = await search(git, SNAPSHOT, 'src/lanes.ts')
 
-    expect(byPath.missed).toEqual(['path'])
+    expect(exact.hits.find(hit => hit.by.includes('path'))?.commit.hash).toBe(h('5'))
+    expect(exact.missed).toEqual([])
+
+    // Not a path from the top: anywhere in a path, which here runs out of time.
+    const anywhere = await search(git, SNAPSHOT, 'lanes.ts')
+
+    expect(anywhere.missed).toEqual(['path'])
   })
 
   test('a hash finds its commit', async () => {

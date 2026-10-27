@@ -61,17 +61,19 @@ export async function loadSnapshot(
     const head = parseHead(symbolic, commit)
     const refList = refs.code === 0 ? parseRefs(refs.stdout) : []
     const hasHistory = head.hash !== null || refList.length > 0
-    const page = hasHistory
-      ? await loadCommits(git, repo.toplevel, { skip: 0, count: options.count, withHead: head.hash !== null, scope })
-      : { commits: [], hasMore: false }
-    const sessionCommits =
+    // Each walks the history on its own: side by side, the slower one sets the wait.
+    const [page, sessionCommits] = await Promise.all([
+      hasHistory
+        ? loadCommits(git, repo.toplevel, { skip: 0, count: options.count, withHead: head.hash !== null, scope })
+        : { commits: [], hasMore: false },
       options.baseline !== null && hasHistory
-        ? await loadSessionCommits(git, repo.toplevel, {
+        ? loadSessionCommits(git, repo.toplevel, {
             baseline: options.baseline,
             withHead: head.hash !== null,
             email: email.code === 0 ? email.stdout.trim() : undefined,
           })
-        : []
+        : [],
+    ])
 
     return {
       kind: 'repo',
@@ -114,8 +116,15 @@ export async function loadCommits(
   return { commits: commits.slice(0, options.count), hasMore: commits.length > options.count }
 }
 
+/**
+ * The next page: as many commits as are loaded, from PAGE_SIZE up to
+ * MAX_PAGE. Each page walks the history again up to its `--skip` (all of it
+ * without a commit-graph), so fewer, bigger pages cost less the deeper they go.
+ */
+export const pageAfter = (loaded: number): number => Math.min(Cmd.MAX_PAGE, Math.max(Cmd.PAGE_SIZE, loaded))
+
 /** The `count` commits after the ones `snapshot` holds, appended; none twice. */
-export async function loadMore(git: GitRunner, snapshot: RepoSnapshot, count = Cmd.PAGE_SIZE): Promise<RepoSnapshot> {
+export async function loadMore(git: GitRunner, snapshot: RepoSnapshot, count = pageAfter(snapshot.commits.length)): Promise<RepoSnapshot> {
   const page = await loadCommits(git, snapshot.repo.toplevel, {
     skip: snapshot.commits.length,
     count,

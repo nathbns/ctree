@@ -187,6 +187,22 @@ Claude reçoit une note : il sait que sa commande a été défaite.
 
 `e` y prépare la demande d'une description de pull request.
 
+## Gros dépôts
+
+Mesuré sur un dépôt synthétique de 440 000 commits, 7 000 branches, branches distantes et tags :
+
+| | sans commit-graph | avec commit-graph |
+| --- | --- | --- |
+| ouverture | 1,6 s | 0,5 s |
+| vue d'ensemble (2 000 commits) | 5,5 s | 1,2 s |
+| rechargement après une commande git de Claude | 1,6 s | 0,6 s |
+| recherche (message, auteur, chemin exact) | 1,7 s | 1,7 s |
+| comparer deux commits à 5 000 commits d'écart | 0,02 s | 0,02 s |
+
+- L'historique se lit par pages qui grandissent avec la profondeur (100, 200, 400… jusqu'à 1 000), car chaque page fait relire à git tout ce qui la précède.
+- Sans commit-graph, git relit tout l'historique à chaque page. Une lecture de plus de 1,5 s le signale une fois : `git commit-graph write --reachable --changed-paths` accélère la lecture, et la recherche par chemin exact.
+- Un chemin exact (`src/lanes.ts`, `docs/`) se cherche vite. Un morceau de nom (`lanes.`) demande de lire les changements de chaque commit : seulement si le chemin exact ne donne rien, et 15 s au plus.
+
 ## Rafraîchissement
 
 - Après une commande Bash de Claude qui contient `git`, tout le graphe est rechargé.

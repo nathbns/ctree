@@ -37,7 +37,7 @@ export function searchPlan(text: string): { by: SearchBy[]; hash: string | null 
   const by: SearchBy[] = [
     { kind: 'message', text: query },
     { kind: 'author', text: query },
-    ...(/[./]/.test(query) && !/\s/.test(query) ? [{ kind: 'path' as const, text: query }] : []),
+    ...(/[./]/.test(query) && !/\s/.test(query) ? [{ kind: 'path' as const, text: query, isExact: true }] : []),
   ]
 
   return { by, hash: /^[0-9a-f]{4,64}$/i.test(query) ? query.toLowerCase() : null }
@@ -52,16 +52,23 @@ export async function search(git: GitRunner, snapshot: RepoSnapshot, text: strin
   const missed: MatchKind[] = []
   let isCut = false
 
+  /** One read; null when git failed or ran out of time. */
+  const read = async (by: SearchBy): Promise<Commit[] | null> => {
+    const result = await git(Cmd.searchLog(by, snapshot.scope, withHead), at).catch(() => null)
+
+    return result?.code === 0 ? parseLog(result.stdout) : null
+  }
+
   const found = await Promise.all([
     ...plan.by.map(async (by): Promise<[MatchKind, Commit[]]> => {
-      const result = await git(Cmd.searchLog(by, snapshot.scope, withHead), at).catch(() => null)
+      // A path is read as given first (fast); anywhere in a path only when that finds nothing.
+      const exact = by.kind === 'path' ? await read(by) : null
+      const commits = exact?.length ? exact : await read(by.kind === 'path' ? { ...by, isExact: false } : by)
 
-      if (!result || result.code !== 0) {
+      if (commits === null) {
         missed.push(by.kind)
         return [by.kind, []]
       }
-
-      const commits = parseLog(result.stdout)
 
       isCut ||= commits.length >= Cmd.SEARCH_LIMIT
 
