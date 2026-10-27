@@ -1,0 +1,14 @@
+{
+  "name": "ctree",
+  "description": "ctree, le graphe git de Claude Code",
+  "owner": {
+    "name": "nathbns"
+  },
+  "plugins": [
+    {
+      "name": "ctree",
+      "source": "./",
+      "description": "Graphe git du dépôt à côté de la conversation : suit les commandes git de Claude, retient celles qui perdraient du travail, les annule ; recherche, comparaison, stashs"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "name": "ctree",
-  "version": "0.3.0",
-  "description": "Graphe git du dépôt dans un panneau à côté de la conversation, qui suit les commandes git de Claude ; branche, tag et push avec confirmation",
+  "version": "0.4.0",
+  "description": "Graphe git du dépôt à côté de la conversation, qui suit les commandes git de Claude : garde-fou, journal et annulation, recherche, comparaison, stashs ; branche, tag et push avec confirmation",
   "author": {
     "name": "nathbns"
   },

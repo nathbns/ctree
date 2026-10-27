@@ -15,7 +15,19 @@ demo · ⎇ main · ✓ origin/main
 j: ↓ k: ↑ ⏎ g: cherch. e: expl. d: comp. m: marq. c: br. p: push u: ⟲ v: vue h: aide
 ```
 
-## Essayer
+## Installer
+
+Au prompt d'une session Claude Code, dans un terminal :
+
+```
+/plugin install ctree --marketplace nathbns/ctree
+```
+
+`y` pour ajouter le marketplace, puis Entrée pour la portée (utilisateur : ctree est là dans toutes tes sessions). Il est actif tout de suite.
+
+Depuis un shell : `claude plugin install ctree --marketplace nathbns/ctree`. Dans l'application de bureau : + à côté du prompt, Plugins, Add marketplace avec `nathbns/ctree`, puis Add plugin.
+
+Pour l'essayer sans l'installer, ou pour le développer :
 
 ```sh
 git clone git@github.com:nathbns/ctree.git ~/ctree
@@ -165,7 +177,7 @@ Laisser passer ?
 - **Si tu laisses passer** une commande qui jette des fichiers modifiés, ctree en garde d'abord une copie (`git stash create`, sans toucher à rien), récupérable depuis le journal.
 - **Les commandes qui ne perdent rien** (commit, rebase, merge, push normal…) ne sont jamais retenues : elles passent par le journal.
 - **Une commande lancée avec `git -C ailleurs`** est retenue avec un avertissement, sans calcul.
-- **Pour couper le garde-fou** : l'option `guard` (`pluginConfigs` → `ctree@inline` → `guard: false` avec `--plugin-dir`). Le garde-fou ne s'applique pas sans personne pour répondre (`claude -p`).
+- **Pour couper le garde-fou** : l'option `guard` (`/plugin configure ctree@ctree` une fois installé ; avec `--plugin-dir`, `pluginConfigs` → `ctree@inline` → `guard: false`). Il est actif par défaut.. Le garde-fou ne s'applique pas sans personne pour répondre (`claude -p`).
 - **En mode par défaut**, Claude Code peut encore demander sa propre permission après ta réponse.
 
 **Le journal (`l`).** Chaque commande git de Claude qui déplace une branche, un tag ou HEAD, ou qui jette des changements, y est inscrite : tour de conversation, commande, ce qui a bougé (`main a2e6115 → 8282214`).
