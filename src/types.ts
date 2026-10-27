@@ -90,7 +90,15 @@ export type Snapshot =
 /** Runs `git <args>` and resolves whatever the exit code. */
 export type GitRunner = (
   args: readonly string[],
-  options?: { cwd?: string; stdin?: string },
+  options?: GitOptions,
 ) => Promise<GitResult>
+
+export type GitOptions = {
+  cwd?: string
+  stdin?: string
+  /** Set over the environment, for the network commands' ssh. */
+  env?: Readonly<Record<string, string>>
+  timeoutMs?: number
+}
 
 export type GitResult = { code: number; stdout: string; stderr: string }

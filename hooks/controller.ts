@@ -1,8 +1,18 @@
 // The pane's state and everything that changes it: loading, refreshing,
-// selection, unfolding, the diff view, the question for Claude. It reaches
-// Claude Code only through `Host`, which register.tsx builds from `$`.
+// selection, unfolding, the diff view, the question for Claude, and the three
+// changes (branch, tag, push), each held in a band until confirmed. It
+// reaches Claude Code only through `Host`, which register.tsx builds from `$`.
 
-import { PAGE_SIZE } from '../src/git-commands'
+import {
+  type Action,
+  nextVersion,
+  planPush,
+  switchAction,
+  switchTargets,
+  tagAction,
+  tagNameError,
+} from '../src/git-actions'
+import { PAGE_SIZE, sshCommand } from '../src/git-commands'
 import {
   commitKey,
   flatten,
@@ -25,10 +35,16 @@ import {
   loadWipFiles,
 } from '../src/repo'
 import { buildView, explainCommitPrompt, explainFilePrompt, explainWipPrompt, type View, WIP } from '../src/rows'
-import type { Commit, FileChange, GitRunner, Snapshot } from '../src/types'
+import type { Commit, FileChange, GitResult, GitRunner, Snapshot } from '../src/types'
 
 export type Host = {
   git: GitRunner
+  /** Runs one of the writes src/git-actions.ts builds; refuses any other. */
+  write: GitRunner
+  /** Appends a note to the conversation that Claude reads and the person does not. */
+  note: (text: string) => Promise<void>
+  /** Whether the person set an ssh command of their own in the environment. */
+  hasOwnSsh: () => Promise<boolean>
   cwd: () => Promise<string>
   after: (ms: number, fn: () => void) => { cancel: () => void }
   invalidate: () => void
@@ -54,6 +70,16 @@ export type DiffMode = {
   diff: Diff | { kind: 'loading' } | { kind: 'error'; message: string }
 }
 
+/** The band in place of the keys while a change waits for its confirmation. */
+export type Band =
+  | { kind: 'preparing'; title: string }
+  | { kind: 'confirm'; action: Action }
+  /** Several branches at the commit: each choice is its own confirmation. */
+  | { kind: 'choose'; title: string; actions: Action[] }
+  | { kind: 'tag-form'; commit: Commit; name: string; message: string; error: string | null }
+  | { kind: 'running'; action: Action }
+  | { kind: 'info'; title: string; lines: string[]; isError: boolean }
+
 export type Model = {
   snapshot: Snapshot | null
   view: View | null
@@ -69,6 +95,8 @@ export type Model = {
   notice: string | null
   /** The next Escape returns to the prompt without closing the pane. */
   isEscapeKept: boolean
+  /** A change being prepared, confirmed or run. */
+  action: Band | null
 }
 
 export const INITIAL: Model = {
@@ -82,12 +110,15 @@ export const INITIAL: Model = {
   mode: { kind: 'list' },
   notice: null,
   isEscapeKept: false,
+  action: null,
 }
 
 /** Rows from the window's end at which the next page starts loading. */
 const PREFETCH_ROWS = 15
 export const REFRESH_DEBOUNCE_MS = 150
 const NOTICE_MS = 8000
+const PUSH_TIMEOUT_MS = 120_000
+const WRITE_TIMEOUT_MS = 30_000
 
 export type Controller = ReturnType<typeof createController>
 
@@ -346,7 +377,46 @@ export function createController(host: Host) {
     isOpen = false
     pending?.timer.cancel()
     pending = null
-    model = { ...model, mode: { kind: 'list' }, notice: null, isEscapeKept: false }
+    model = {
+      ...model,
+      mode: { kind: 'list' },
+      notice: null,
+      isEscapeKept: false,
+      action: model.action?.kind === 'running' ? model.action : null,
+    }
+  }
+
+  /** The commit of the selected row, or of the file row under it. */
+  const selectedCommit = (): Commit | null => {
+    const item = itemsOf().find(one => one.key === model.selected)
+    const hash = item?.kind === 'commit' ? item.commit.hash : item ? item.under : null
+
+    return repoOf()?.commits.find(commit => commit.hash === hash) ?? null
+  }
+
+  /** Shows a band, the ring on `focusKey` (the cancel key, so a stray Enter cancels). */
+  const openBand = (band: Band | null, focusKey?: string) => {
+    set({ action: band, notice: null, isEscapeKept: false })
+
+    if (focusKey) {
+      void host.focus(focusKey).catch(() => undefined)
+    }
+  }
+
+  /** Back to the list's keys, the ring on the selected row. */
+  const closeBand = () => {
+    openBand(null, model.selected ?? undefined)
+  }
+
+  /** Lets ssh fail rather than prompt, unless the person set their own ssh command. */
+  const sshEnv = async (toplevel: string): Promise<Record<string, string>> => {
+    if (await host.hasOwnSsh()) {
+      return {}
+    }
+
+    const configured = await host.git(sshCommand(), { cwd: toplevel })
+
+    return configured.code === 0 ? {} : { GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }
   }
 
   return {
@@ -428,7 +498,7 @@ export function createController(host: Host) {
      * or keep it in place where it would wrap past an end.
      */
     ringMoved(target: string | undefined): 'stay' | 'go' {
-      if (model.mode.kind !== 'list' || model.snapshot?.kind !== 'repo') {
+      if (model.mode.kind !== 'list' || model.snapshot?.kind !== 'repo' || model.action) {
         return 'go'
       }
 
@@ -471,8 +541,12 @@ export function createController(host: Host) {
       }
     },
 
-    /** Enter on a row. */
+    /** Enter on a row; nothing while a change waits in the band. */
     press(item: Item | 'wip') {
+      if (model.action) {
+        return
+      }
+
       if (item === 'wip') {
         return toggle(WIP)
       }
@@ -518,8 +592,141 @@ export function createController(host: Host) {
       )
     },
 
+    /** c: switch to the selected commit's branch (a choice when it has several). */
+    beginSwitch() {
+      const repo = repoOf()
+      const commit = selectedCommit()
+
+      if (!repo) return
+      if (!commit) return showNotice('Sélectionne un commit pour changer de branche', false)
+
+      const actions = switchTargets(repo, commit.hash).map(target => switchAction(repo, target))
+      const [only] = actions
+
+      if (!only) return showNotice('HEAD est déjà sur ce commit', false)
+
+      openBand(actions.length === 1 ? { kind: 'confirm', action: only } : { kind: 'choose', title: '⎇ Changer de branche', actions }, 'act-n')
+    },
+
+    /** t: a form for a tag on the selected commit, its name guessed from the last version. */
+    beginTag() {
+      const repo = repoOf()
+      const commit = selectedCommit()
+
+      if (!repo) return
+      if (!commit) return showNotice('Sélectionne un commit à tagger', false)
+
+      const tags = repo.refs.filter(ref => ref.kind === 'tag').map(ref => ref.name)
+
+      openBand({ kind: 'tag-form', commit, name: nextVersion(tags), message: '', error: null }, 'tag-name')
+    },
+
+    /** What the person types in the tag form; drawn again only to clear an error. */
+    setTagField(field: 'name' | 'message', value: string) {
+      const band = model.action
+
+      if (band?.kind !== 'tag-form') return
+
+      model = { ...model, action: { ...band, [field]: value, error: field === 'name' ? null : band.error } }
+
+      if (band.error !== null && field === 'name') {
+        host.invalidate()
+      }
+    },
+
+    /** Enter in the tag form: the name checked, then the confirmation. */
+    submitTag() {
+      const repo = repoOf()
+      const band = model.action
+
+      if (!repo || band?.kind !== 'tag-form') return
+
+      const name = band.name.trim()
+      const error = tagNameError(name, repo.refs.filter(ref => ref.kind === 'tag').map(ref => ref.name))
+
+      if (error) {
+        set({ action: { ...band, error } })
+        return
+      }
+
+      openBand({ kind: 'confirm', action: tagAction(band.commit, name, band.message) }, 'act-n')
+    },
+
+    /** p: what pushing the current branch would send, read before it asks. */
+    async beginPush() {
+      const repo = repoOf()
+
+      if (!repo) return
+
+      const band: Band = { kind: 'preparing', title: '↑ Préparation du push…' }
+
+      openBand(band)
+
+      try {
+        const plan = await planPush(host.git, repo, await sshEnv(repo.repo.toplevel))
+
+        if (model.action !== band) return
+
+        openBand(
+          plan.kind === 'ready'
+            ? { kind: 'confirm', action: plan.action }
+            : { kind: 'info', title: plan.title, lines: [plan.reason], isError: false },
+          'act-n',
+        )
+      } catch (error) {
+        if (model.action === band) {
+          openBand({ kind: 'info', title: '↑ Push impossible', lines: [messageOf(error)], isError: true }, 'act-n')
+        }
+      }
+    },
+
+    /** y (or the chosen number): runs the change, tells Claude, reloads the graph. */
+    async confirm(index = 0) {
+      const repo = repoOf()
+      const band = model.action
+      const action = band?.kind === 'confirm' ? band.action : band?.kind === 'choose' ? band.actions[index] : undefined
+
+      if (!repo || !action) return
+
+      set({ action: { kind: 'running', action } })
+
+      try {
+        const toplevel = repo.repo.toplevel
+        const env = action.kind === 'push' ? await sshEnv(toplevel) : {}
+        const timeoutMs = action.kind === 'push' ? PUSH_TIMEOUT_MS : WRITE_TIMEOUT_MS
+        const result = await host.write(action.args, { cwd: toplevel, env, timeoutMs })
+
+        if (result.code !== 0) {
+          openBand({ kind: 'info', title: `✗ ${action.title}`, lines: errorLines(result), isError: true }, 'act-n')
+          return
+        }
+
+        closeBand()
+        showNotice(action.success, false)
+        void host.note(action.note).catch(() => undefined)
+        await refresh('all')
+      } catch (error) {
+        openBand({ kind: 'info', title: `✗ ${action.title}`, lines: [messageOf(error)], isError: true }, 'act-n')
+      }
+    },
+
+    /** n: the band goes, nothing ran. */
+    cancelAction() {
+      if (model.action && model.action.kind !== 'running') {
+        closeBand()
+      }
+    },
+
     /** Escape was pressed: whether it closes the pane, or is spent on going back. */
     escape(): 'close' | 'back' | 'keep' {
+      if (model.action) {
+        if (model.action.kind !== 'running') {
+          closeBand()
+        }
+
+        return 'back'
+      }
+
       if (model.mode.kind === 'diff') {
         set({ mode: { kind: 'list' } })
         return 'back'
@@ -559,6 +766,16 @@ function promptFor(model: Model, commits: readonly Commit[], items: readonly Ite
   }
 
   return null
+}
+
+/** What git said when it refused, its hints left out, four lines at most. */
+function errorLines(result: GitResult): string[] {
+  const lines = (result.stderr.trim() || result.stdout.trim())
+    .split('\n')
+    .map(line => line.replace(/^(fatal|error): /, '').trim())
+    .filter(line => line && !line.startsWith('hint:'))
+
+  return lines.length > 0 ? lines.slice(0, 4) : [`git a quitté avec le code ${result.code}`]
 }
 
 function messageOf(error: unknown): string {

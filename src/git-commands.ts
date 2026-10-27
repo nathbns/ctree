@@ -88,6 +88,25 @@ export const sessionCommits = (options: {
   '--branches', '--stdin',
 ]
 
+export const remotes = (): string[] => ['remote']
+
+/** The tags a remote holds, by name (network). */
+export const remoteTags = (remote: string): string[] => ['ls-remote', '--tags', '--refs', remote]
+
+/** The tags reachable from HEAD, with whether each is annotated (`tag`). */
+export const mergedTags = (): string[] => [
+  'tag', '--list', '--merged', 'HEAD', '--format=%(refname:strip=2)%1f%(objecttype)',
+]
+
+/** The commits of a range (`origin/main..HEAD`, or `HEAD --not --remotes`), 50 at most. */
+export const rangeLog = (range: readonly string[]): string[] => [
+  'log', '-z', '--no-color', '--no-decorate',
+  `--format=${['%H', '%P', '%an', '%ae', '%at', '%s'].join('%x1f')}`,
+  '-n51', ...range, '--',
+]
+
+export const sshCommand = (): string[] => ['config', '--get', 'core.sshCommand']
+
 /** What a commit changes against its first parent: counts, then statuses. */
 export const commitNumstat = (hash: string, parent: string | undefined): string[] =>
   parent === undefined
@@ -144,6 +163,9 @@ const READS: Record<string, (rest: readonly string[]) => boolean> = {
   'show': () => true,
   'worktree': rest => rest[0] === 'list',
   'config': rest => rest[0] === '--get' && rest.length === 2,
+  'remote': rest => rest.length === 0,
+  'ls-remote': rest => rest.length === 3 && rest[0] === '--tags' && rest[1] === '--refs' && !rest[2]?.startsWith('-'),
+  'tag': rest => rest[0] === '--list' && !rest.some(arg => /^-[adfmsuF]$|^--(delete|force|annotate|sign|message|file)/.test(arg)),
   'symbolic-ref': rest => rest.length === 2 && rest[0] === '-q' && rest[1] === 'HEAD',
 }
 

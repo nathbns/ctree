@@ -1,6 +1,6 @@
 # gittree
 
-Un mod Claude Code qui affiche le graphe git du dépôt dans un panneau à côté de la conversation, au plus près du graphe Source Control de VS Code et de l'extension Git Graph. Il suit en direct les commandes git que Claude lance, et marque d'un `✦` les commits créés pendant la session. Il est strictement en lecture seule.
+Un mod Claude Code qui affiche le graphe git du dépôt dans un panneau à côté de la conversation, au plus près du graphe Source Control de VS Code et de l'extension Git Graph. Il suit en direct les commandes git que Claude lance, et marque d'un `✦` les commits créés pendant la session. Il lit git, et n'écrit que trois choses, chacune après ta confirmation : changer de branche, créer un tag, pousser.
 
 ```
 demo · ⎇ main · ✓ origin/main
@@ -12,7 +12,7 @@ demo · ⎇ main · ✓ origin/main
   │ │ ● Calcul des lanes : octopus m… origin/feature/lanes  Léa             6 h  42cccc5
   ●─╯ │ Étiquettes de branches                              Nathan          2 j  57c5586
   ●───╯ Parsing de git log                        ◇ v0.1.0  Nathan          3 j  deeed04
-j: ↓  k: ↑  ⏎ déplier  e: expliquer  r: rafraîchir  q: fermer
+j: ↓  k: ↑  ⏎ déplier  e: expliquer  c: branche  t: tag  p: push  r: rafraîchir  q: fermer
 ```
 
 ## Essayer
@@ -32,9 +32,12 @@ Puis `/gittree` au prompt. En mode plein écran (terminal d'au moins 110 colonne
 | `j` / `k`, `↓` / `↑` | ligne suivante / précédente (la suite de l'historique se charge en descendant) |
 | `Entrée` | sur un commit : déplie ses fichiers ; sur un fichier : affiche son diff |
 | `e` | prépare dans le prompt une question pour que Claude explique le commit (ou le fichier) sélectionné, sans l'envoyer |
+| `c` | change de branche : celle du commit sélectionné (au choix s'il en porte plusieurs) |
+| `t` | crée un tag annoté sur le commit sélectionné |
+| `p` | pousse la branche courante |
 | `r` | recharge le dépôt |
 | `q` | ferme le panneau ; dans la vue diff, revient à la liste |
-| `Échap` | ferme le panneau ; dans la vue diff, revient à la liste ; juste après `e`, rend la main au prompt sans fermer |
+| `Échap` | ferme le panneau ; annule une action en attente ; dans la vue diff, revient à la liste ; juste après `e`, rend la main au prompt sans fermer |
 
 La molette et Page↑/Page↓ font défiler la liste. Dans VS Code, il n'y a pas de raccourcis clavier : on clique sur les lignes et les boutons.
 
@@ -51,6 +54,36 @@ La molette et Page↑/Page↓ font défiler la liste. Dans VS Code, il n'y a pas
 - **Colonnes** : message, étiquettes, auteur, date relative, hash court. L'auteur disparaît sous 84 colonnes, le hash sous 72, la date sous 60.
 - **Fichiers d'un commit** : comparés à son premier parent (comme VS Code pour un merge), avec statut M/A/D/R et le nombre de lignes +/−.
 
+## Changer de branche, tagger, pousser
+
+Rien ne s'écrit sans confirmation. `c`, `t` et `p` ouvrent un bandeau en bas du panneau, à la place des touches. Il montre la commande exacte et ce qu'elle va faire ; `y` lance, `n` ou `Échap` annule.
+
+```
+ ↑ Pousser feature/ui vers origin/feature/ui
+   git push --follow-tags -u origin feature/ui
+   crée origin/feature/ui et la suit (-u)
+   2 commits : ed58ff3 Panneau : colonnes adaptatives · 63622de Navigation j/k
+   2 tags : v0.1.0, v0.3.0-rc1
+ y: pousser  n: annuler
+```
+
+- **`c`, changer de branche :** `git switch <branche>`.
+  - Une branche seulement distante est créée en local, en la suivant (`git switch --track`).
+  - Un commit sans branche détache HEAD, avec un avertissement.
+  - Les modifications non commitées sont gardées si git le peut ; sinon git refuse, et son message s'affiche.
+- **`t`, créer un tag :** `git tag -a <nom> -m <message> <commit>`.
+  - Le nom proposé est la version suivante (`v0.2.0` donne `v0.3.0`).
+  - Un nom déjà pris ou invalide est refusé avant la confirmation.
+  - Le tag est annoté, pour partir avec le push suivant.
+- **`p`, pousser :** `git push --follow-tags origin <branche>`.
+  - Ajoute `-u` si la branche n'a pas encore de distante.
+  - La confirmation liste les commits et les tags annotés qui partiront (le dépôt distant est interrogé pour ses tags).
+  - Jamais de push forcé : une branche en retard sur sa distante est bloquée, avec l'explication.
+
+Après chaque action réussie, le graphe se recharge. Une note est ajoutée à la conversation pour Claude, que toi tu ne vois pas : Claude sait ainsi que la branche a changé sous ses pieds.
+
+À savoir : les commandes passent par l'API des mods, qui lance git avec les hooks du dépôt désactivés. Un `pre-push` ou un `post-checkout` ne tournent donc pas pour ces actions. Pour ssh, git ne pose aucune question (`BatchMode`) : il échoue avec un message plutôt que de bloquer, sauf si tu as réglé ta propre commande ssh.
+
 ## Rafraîchissement
 
 - Après une commande Bash de Claude qui contient `git`, tout le graphe est rechargé.
@@ -60,19 +93,22 @@ La molette et Page↑/Page↓ font défiler la liste. Dans VS Code, il n'y a pas
 
 ## Sécurité
 
-Le mod ne lance que des lectures, sans shell, en passant les arguments directement (`$.process.run`).
+Le mod lance git sans shell, en passant les arguments directement (`$.process.run`).
 
-- Toute commande hors de la liste blanche (`src/git-commands.ts`, `isReadOnly`) est refusée avant d'être lancée.
+- Les lectures passent par une liste blanche (`src/git-commands.ts`, `isReadOnly`).
+- Les écritures passent par une garde à part (`src/git-actions.ts`, `isAllowedWrite`). Elle n'admet que les cinq formes construites par les trois actions : `switch <branche>`, `switch --track`, `switch --detach <hash>`, `tag -a … <hash>`, `push --follow-tags [-u] <distant> <branche>`. Elle refuse tout le reste : `--force`, refspec `+…` ou `:…`, `--delete`, `tag -d`, `reset`, etc. Ces écritures ne partent qu'après `y`.
 - Chaque appel passe aussi `--no-optional-locks`, `-c core.fsmonitor=false` et `-c log.showSignature=false` ; les diffs passent `--no-ext-diff --no-textconv`. Un dépôt ne peut donc ni écrire son index ni lancer un programme configuré.
 
 ## Structure
 
 ```
 src/      cœur pur, sans dépendance à Claude Code : commandes git, parsing,
-          calcul des lanes, couleurs, étiquettes, mise en page, lignes
+          calcul des lanes, couleurs, étiquettes, mise en page, lignes,
+          actions (branche, tag, push) et leur garde
 hooks/    le mod : register.tsx (hooks), controller.ts (état), view.tsx (rendu)
 types/    contrat $.state (l'état des refs au début de la session, pour ✦)
-tests/    lanes, parsing, étiquettes et couleurs, lignes, contrôleur, panneau monté
+tests/    lanes, parsing, étiquettes et couleurs, lignes, actions, contrôleur,
+          panneau monté
 ```
 
 ## Développer
@@ -80,7 +116,7 @@ tests/    lanes, parsing, étiquettes et couleurs, lignes, contrôleur, panneau 
 Depuis le dossier du dépôt :
 
 ```sh
-claude plugin test .         # 64 tests
+claude plugin test .         # 94 tests
 claude plugin validate .
 npx -p typescript tsc -p .   # après un premier lancement avec --plugin-dir,
                              # qui dépose les types dans .claude-plugin/types/

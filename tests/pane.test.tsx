@@ -2,6 +2,7 @@ import type { Args, On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
+import { isAllowedWrite } from '../src/git-actions'
 import { isReadOnly, READ_FLAGS } from '../src/git-commands'
 import { type Answer, demoGit, h, logOf, type Script } from './fixtures'
 
@@ -29,11 +30,12 @@ const OPEN = {
 
 /**
  * A session in /work/demo whose git answers from `script`, then the demo.
- * Keeps every git run (its arguments after the read flags), what was put in
- * the prompt, and the panes opened.
+ * Keeps every git run (its arguments after the flags), the writes apart,
+ * what was put in the prompt, the panes opened, the rows appended.
  */
 function world(on: On, script: Script = () => undefined) {
   const runs: string[][] = []
+  const writes: string[][] = []
   const filled: string[] = []
   const opened: Args<'ui.open'>[] = []
   const focused: string[] = []
@@ -65,15 +67,25 @@ function world(on: On, script: Script = () => undefined) {
 
     expect(git).toBe('git')
     expect(flagsAndArgs.slice(0, READ_FLAGS.length)).toEqual([...READ_FLAGS])
-    expect(`${args.join(' ')} → ${isReadOnly(args)}`).toBe(`${args.join(' ')} → true`)
+    expect(`${args.join(' ')} → ${isReadOnly(args) || isAllowedWrite(args)}`).toBe(`${args.join(' ')} → true`)
     runs.push(args)
+
+    if (!isReadOnly(args)) {
+      writes.push(args)
+
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
 
     const answer = script(args) ?? demoGit(args)
 
     return { value: { stderr: '', ...answer, isStdoutTruncated: false, isStderrTruncated: false } }
   })
 
-  return { runs, filled, opened, focused, clock }
+  mock.env(on, {})
+
+  const session = mock.session(on)
+
+  return { runs, writes, filled, opened, focused, clock, session }
 }
 
 async function openPane($: Engine, w: ReturnType<typeof world>) {
@@ -229,6 +241,111 @@ describe('the pane', () => {
     await ui.press({ key: 'key-r' })
 
     expect(w.runs.filter(args => args[0] === 'log').length).toBe(before + 1)
+    await ui.unmount()
+  })
+})
+
+describe('the changes (V2)', () => {
+  const appendedText = (w: ReturnType<typeof world>) =>
+    w.session.appended().map(row => JSON.stringify(row.message.content)).join('\n')
+
+  test('c shows the command in place of the keys; n runs nothing, y switches and tells Claude', async ($, on) => {
+    const w = world(on)
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    await ui.press({ key: 'key-k' })
+    await ui.press({ key: 'key-k' })
+    await ui.press({ key: 'key-c' })
+
+    expect(await ui.find({ type: 'Text', text: /git switch feature\/ui/ })).toBeDefined()
+    expect(await ui.find({ key: 'key-j' })).toBeUndefined()
+
+    await ui.press({ key: 'act-n' })
+
+    expect(w.writes).toEqual([])
+    expect(await ui.find({ key: 'key-j' })).toBeDefined()
+
+    await ui.press({ key: 'key-c' })
+    await ui.press({ key: 'act-y' })
+    await w.clock.settle()
+
+    expect(w.writes).toEqual([['switch', 'feature/ui']])
+    expect(appendedText(w)).toContain('passée sur la branche feature/ui')
+    expect(await ui.find({ type: 'Text', text: /✓ Sur feature\/ui/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`t opens a form with the next version, refuses a taken name, then tags, on ${surface}`, async ($, on) => {
+      const w = world(on)
+
+      await openPane($, w)
+
+      const ui = await $.ui.mount({ ...PANE, surface })
+
+      await ui.press({ key: 'key-t' })
+
+      expect((await ui.find({ key: 'tag-name' }))?.props.value).toBe('v0.3.0')
+
+      await ui.input({ key: 'tag-name', text: 'v0.2.0' })
+
+      expect(await ui.find({ type: 'Text', text: /le tag v0.2.0 existe déjà/ })).toBeDefined()
+      expect(w.writes).toEqual([])
+
+      await ui.input({ key: 'tag-name', text: 'v0.3.0' })
+
+      expect(await ui.find({ type: 'Text', text: /git tag -a v0.3.0 -m v0.3.0 3333333/ })).toBeDefined()
+
+      await ui.press({ key: 'act-y' })
+      await w.clock.settle()
+
+      expect(w.writes).toEqual([['tag', '-a', 'v0.3.0', '-m', 'v0.3.0', h('3')]])
+      await ui.unmount()
+    })
+  }
+
+  test('p lists what would leave before pushing, then pushes on y', async ($, on) => {
+    const w = world(on)
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    await ui.press({ key: 'key-p' })
+    await w.clock.settle()
+
+    expect(await ui.find({ type: 'Text', text: /git push --follow-tags origin main/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /1 tag : v0.1.0/ })).toBeDefined()
+    expect(w.writes).toEqual([])
+
+    await ui.press({ key: 'act-y' })
+    await w.clock.settle()
+
+    expect(w.writes).toEqual([['push', '--follow-tags', 'origin', 'main']])
+    expect(appendedText(w)).toContain('a poussé main vers origin/main')
+    await ui.unmount()
+  })
+
+  test('a push that would need force is blocked, never sent', async ($, on) => {
+    const w = world(on, args =>
+      args[0] === 'for-each-ref'
+        ? { exitCode: 0, stdout: `refs/heads/main\x1f${h('3')}\x1f\x1forigin/main\x1fahead 1, behind 2\x1f\n` }
+        : undefined,
+    )
+
+    await openPane($, w)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    await ui.press({ key: 'key-p' })
+    await w.clock.settle()
+
+    expect(await ui.find({ type: 'Text', text: /pas de push forcé/ })).toBeDefined()
+    expect(await ui.find({ key: 'act-y' })).toBeUndefined()
+    expect(w.writes).toEqual([])
     await ui.unmount()
   })
 })

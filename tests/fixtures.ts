@@ -80,7 +80,13 @@ export function demoGit(args: readonly string[]): Answer {
     case 'symbolic-ref':
       return { exitCode: 0, stdout: 'refs/heads/main\n' }
     case 'config':
-      return { exitCode: 0, stdout: 'n@e.st\n' }
+      return rest.includes('user.email') ? { exitCode: 0, stdout: 'n@e.st\n' } : { exitCode: 1, stdout: '' }
+    case 'remote':
+      return { exitCode: 0, stdout: 'origin\n' }
+    case 'ls-remote':
+      return { exitCode: 0, stdout: '' }
+    case 'tag':
+      return { exitCode: 0, stdout: 'v0.1.0\x1ftag\nv0.2.0\x1fcommit\n' }
     case 'for-each-ref':
       return { exitCode: 0, stdout: refsOf(SNAPSHOT) }
     case 'status':
@@ -88,6 +94,11 @@ export function demoGit(args: readonly string[]): Answer {
     case 'worktree':
       return { exitCode: 0, stdout: `worktree /work/demo\nHEAD ${h('3')}\nbranch refs/heads/main\n\n` }
     case 'log': {
+      // A range (what a push would send): main is level with origin/main.
+      if (rest.some(arg => arg.includes('..') || arg === '--not')) {
+        return { exitCode: 0, stdout: '' }
+      }
+
       const skip = Number(/--skip=(\d+)/.exec(line)?.[1] ?? 0)
       const count = Number(/ -n(\d+)/.exec(line)?.[1] ?? 1000)
 

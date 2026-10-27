@@ -1,9 +1,12 @@
 // gittree: the repository's commit graph in a pane beside the conversation.
-// /gittree opens it; it follows the git commands Claude runs, read-only.
+// /gittree opens it; it follows the git commands Claude runs. It reads git,
+// and writes only the three changes the person confirms (branch, tag, push).
 
 import type { EngineInterface, Register } from 'claude-code'
 
+import { isAllowedWrite } from '../src/git-actions'
 import { GIT_ENV, isReadOnly, READ_FLAGS } from '../src/git-commands'
+import type { GitOptions } from '../src/types'
 import { createController, type Controller, type Host } from './controller'
 import { paneTree } from './view'
 
@@ -21,21 +24,38 @@ const paneArgs = (focus: boolean) => ({
 })
 
 function hostOf($: EngineInterface): Host {
+  // Every run, read or write, carries the same flags: no fsmonitor hook, no
+  // gpg, no optional lock. Argv only, never a shell.
+  const run = async (args: readonly string[], options?: GitOptions) => {
+    const result = await $.process.run(['git', ...READ_FLAGS, ...args], {
+      env: { ...GIT_ENV, ...options?.env },
+      timeoutMs: options?.timeoutMs ?? GIT_TIMEOUT_MS,
+      ...(options?.cwd ? { cwd: options.cwd } : {}),
+      ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
+    })
+
+    return { code: result.exitCode, stdout: result.stdout, stderr: result.stderr }
+  }
+
   return {
     git: async (args, options) => {
       if (!isReadOnly(args)) {
-        throw new Error(`gittree ne lance que des lectures : git ${args[0] ?? ''} refusé`)
+        throw new Error(`gittree ne lance que des lectures ici : git ${args[0] ?? ''} refusé`)
       }
 
-      const result = await $.process.run(['git', ...READ_FLAGS, ...args], {
-        env: { ...GIT_ENV },
-        timeoutMs: GIT_TIMEOUT_MS,
-        ...(options?.cwd ? { cwd: options.cwd } : {}),
-        ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
-      })
-
-      return { code: result.exitCode, stdout: result.stdout, stderr: result.stderr }
+      return run(args, options)
     },
+    write: async (args, options) => {
+      if (!isAllowedWrite(args)) {
+        throw new Error(`gittree refuse cette écriture : git ${args.join(' ')}`)
+      }
+
+      return run(args, options)
+    },
+    note: async text => {
+      await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+    },
+    hasOwnSsh: async () => Boolean((await $.env.get('GIT_SSH_COMMAND')) || (await $.env.get('GIT_SSH'))),
     cwd: () => $.session.cwd(),
     after: (ms, fn) => $.clock.after(ms, fn),
     invalidate: () => $.ui.invalidate('ui.render'),
@@ -94,7 +114,8 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
-    const { Box, Text, Button, Code } = $.ui.resolve(e)
+    const table = $.ui.resolve(e)
+    const { Box, Text, Button, Code } = table
 
     if (!ctl) {
       return <Text dimColor>gittree démarre…</Text>
@@ -102,7 +123,7 @@ export const register: Register = on => {
 
     ctl.shown()
 
-    return paneTree({ Box, Text, Button, Code }, ctl, {
+    return paneTree({ Box, Text, Button, Code, ...('Input' in table ? { Input: table.Input } : {}) }, ctl, {
       columns: e.props.bodyColumns,
       rows: e.props.scroll.bodyRows,
       isDocked: e.props.placement === 'dock',
@@ -110,8 +131,9 @@ export const register: Register = on => {
     })
   })
 
-  // Escape leaves the diff view before it closes anything, and right after
-  // `e` it only hands the keys back to the prompt where the question waits.
+  // Escape cancels a change waiting in the band and leaves the diff view
+  // before it closes anything; right after `e` it only hands the keys back to
+  // the prompt where the question waits.
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
     if (ctl && e.origin.kind === 'person') {
       const answer = ctl.escape()

@@ -1,9 +1,11 @@
 // The pane's tree: the list (header, pinned uncommitted row, the window of
-// commits and files, the keys), the diff view, and the states with no graph.
+// commits and files, the keys or the band of a change waiting for its
+// confirmation), the diff view, and the states with no graph.
 
 import type { Elements, RenderElement } from 'claude-code'
 
-import { columnsFor, graphLimit, truncate } from '../src/layout'
+import { displayCommand } from '../src/git-actions'
+import { columnsFor, graphLimit, textWidth, truncate } from '../src/layout'
 import { type Item, WIP_KEY } from '../src/list'
 import {
   commitLine,
@@ -16,9 +18,11 @@ import {
   WIP,
 } from '../src/rows'
 import { shortHash, statusLetter } from '../src/format'
-import type { Controller, DiffMode } from './controller'
+import type { Band, Controller, DiffMode } from './controller'
 
-export type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Code'>
+/** The elements drawn with; `Input` is absent where the surface has none (mobile). */
+export type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Code'> &
+  Partial<Pick<Elements['terminal'], 'Input'>>
 
 export type Frame = {
   /** Body columns of the pane. */
@@ -30,8 +34,39 @@ export type Frame = {
   now: number
 }
 
-/** Rows the list keeps for itself: the header and the keys. */
-const CHROME_ROWS = 2
+/** The list's keys, long while they fit on one row, else short. */
+const LONG_KEYS: readonly (readonly [string, string])[] = [
+  ['j', '↓'], ['k', '↑'], ['⏎', 'déplier'], ['e', 'expliquer'], ['c', 'branche'],
+  ['t', 'tag'], ['p', 'push'], ['r', 'rafraîchir'], ['q', 'fermer'],
+]
+const SHORT_KEYS: readonly (readonly [string, string])[] = [
+  ['j', '↓'], ['k', '↑'], ['⏎', ''], ['e', 'expl.'], ['c', 'br.'],
+  ['t', 'tag'], ['p', 'push'], ['r', 'maj'], ['q', '✕'],
+]
+
+const keysWidth = (keys: readonly (readonly [string, string])[], gap: number) =>
+  keys.reduce((sum, [key, label]) => sum + textWidth(key === '⏎' ? `⏎ ${label}`.trim() : `${key}: ${label}`), 0) +
+  gap * (keys.length - 1)
+
+/** Rows the keys take: one, or two once even the short ones wrap. */
+const keyRows = (width: number) => (keysWidth(SHORT_KEYS, 1) <= width ? 1 : 2)
+
+/** Rows a band takes, so the window of rows above it keeps the pane's height. */
+function bandRows(band: Band): number {
+  switch (band.kind) {
+    case 'preparing':
+    case 'running':
+      return 2
+    case 'confirm':
+      return 3 + band.action.details.length
+    case 'choose':
+      return 2 + Math.min(9, band.actions.length)
+    case 'tag-form':
+      return 4
+    case 'info':
+      return 2 + band.lines.length
+  }
+}
 
 export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
   const { Box, Text } = ui
@@ -67,7 +102,9 @@ export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
   }
 
   const hasWip = snapshot.status.length > 0
-  const size = Math.max(1, frame.rows - CHROME_ROWS - (hasWip ? 1 : 0))
+  const band = ctl.model.action
+  const chrome = 1 + (band ? bandRows(band) : keyRows(width))
+  const size = Math.max(1, frame.rows - chrome - (hasWip ? 1 : 0))
 
   ctl.setWindowSize(size)
 
@@ -91,12 +128,14 @@ export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
   const emptyNote: Segment[] =
     items.length === 0 ? [{ text: '   Aucun commit pour l’instant.', dim: true }] : []
 
+  // The ring starts on the selected row, unless a band holds it.
   const rowOf = (item: Item) => {
     const isSelected = item.key === selected
     const line = { ...options, isSelected }
+    const isStart = isSelected && !band
 
-    if (item.kind === 'commit') return row(ui, item.key, commitLine(view, item.commit, line), isSelected, () => ctl.press(item))
-    if (item.kind === 'file') return row(ui, item.key, fileLine(view, item.under, item.change, line), isSelected, () => ctl.press(item))
+    if (item.kind === 'commit') return row(ui, item.key, commitLine(view, item.commit, line), isStart, () => ctl.press(item))
+    if (item.kind === 'file') return row(ui, item.key, fileLine(view, item.under, item.change, line), isStart, () => ctl.press(item))
 
     return <Text>{segments(ui, noteLine(view, item.under, item.text, line))}</Text>
   }
@@ -109,16 +148,124 @@ export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
           ui,
           WIP_KEY,
           wipLine(view, snapshot.status.length, { ...options, isSelected: selected === WIP_KEY }),
-          selected === WIP_KEY,
+          selected === WIP_KEY && !band,
           () => ctl.press('wip'),
         )}
       <Box flexDirection="column" flexGrow={1}>
         {emptyNote.length > 0 && <Text>{segments(ui, emptyNote)}</Text>}
         {shown.map(rowOf)}
       </Box>
-      {keys(ui, ctl, width, 'list')}
+      {band ? bandTree(ui, ctl, band, width) : keys(ui, ctl, width, 'list')}
     </Box>
   )
+}
+
+/** The band of a change: what it runs, then y or n. Its cancel key holds the ring. */
+function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderElement {
+  const { Box, Text, Button, Input } = ui
+  const line = (text: string) => truncate(text, width)
+  const act = (hotkey: string, label: string, onPress: () => void, isStart = false) => (
+    <Button key={`act-${hotkey}`} plain hotkey={hotkey} label={label} {...(isStart ? { autoFocus: true as const } : {})} onPress={onPress} />
+  )
+  const cancel = (label = 'annuler') => act('n', label, () => ctl.cancelAction(), true)
+
+  switch (band.kind) {
+    case 'preparing':
+      return (
+        <Box flexDirection="column">
+          <Text bold>{line(band.title)}</Text>
+          <Box flexDirection="row" columnGap={2}>{cancel()}</Box>
+        </Box>
+      )
+    case 'running':
+      return (
+        <Box flexDirection="column">
+          <Text bold>{line(band.action.title)}</Text>
+          <Text dimColor>{line(`  ${displayCommand(band.action.args)} en cours…`)}</Text>
+        </Box>
+      )
+    case 'confirm':
+      return (
+        <Box flexDirection="column">
+          <Text bold>{line(band.action.title)}</Text>
+          <Text color="claude">{line(`  ${displayCommand(band.action.args)}`)}</Text>
+          {band.action.details.map(detail => (
+            <Text dimColor>{line(`  ${detail}`)}</Text>
+          ))}
+          <Box flexDirection="row" columnGap={2}>
+            {act('y', band.action.confirm, () => void ctl.confirm())}
+            {cancel()}
+          </Box>
+        </Box>
+      )
+    case 'choose':
+      return (
+        <Box flexDirection="column">
+          <Text bold>{line(band.title)}</Text>
+          {band.actions.slice(0, 9).map((action, i) => act(String(i + 1), line(displayCommand(action.args)), () => void ctl.confirm(i)))}
+          <Box flexDirection="row" columnGap={2}>{cancel()}</Box>
+        </Box>
+      )
+    case 'tag-form': {
+      const title = `◇ Nouveau tag sur ${shortHash(band.commit.hash)} « ${band.commit.subject} »`
+
+      if (!Input) {
+        return (
+          <Box flexDirection="column">
+            <Text bold>{line(title)}</Text>
+            <Text dimColor>{line('  Créer un tag demande un champ de texte, absent ici.')}</Text>
+            <Text dimColor> </Text>
+            <Box flexDirection="row" columnGap={2}>{cancel('fermer')}</Box>
+          </Box>
+        )
+      }
+
+      const submit = (field: 'name' | 'message') => (value: string) => {
+        ctl.setTagField(field, value)
+        ctl.submitTag()
+      }
+
+      return (
+        <Box flexDirection="column">
+          <Text bold>{line(title)}</Text>
+          <Input
+            key="tag-name"
+            label="Nom"
+            value={band.name}
+            placeholder="v1.0.0"
+            submitLabel="valider"
+            autoFocus
+            onInput={value => ctl.setTagField('name', value)}
+            onSubmit={submit('name')}
+          />
+          <Input
+            key="tag-message"
+            label="Message"
+            value={band.message}
+            placeholder={band.name || 'message du tag'}
+            submitLabel="valider"
+            onInput={value => ctl.setTagField('message', value)}
+            onSubmit={submit('message')}
+          />
+          {band.error ? (
+            <Text color="error">{line(`  ${band.error}`)}</Text>
+          ) : (
+            <Text dimColor>{line('  ⏎ valider · Tab champ suivant · Échap annuler')}</Text>
+          )}
+        </Box>
+      )
+    }
+    case 'info':
+      return (
+        <Box flexDirection="column">
+          <Text bold {...(band.isError ? { color: 'error' } : {})}>{line(band.title)}</Text>
+          {band.lines.map(text => (
+            <Text dimColor={!band.isError}>{line(`  ${text}`)}</Text>
+          ))}
+          <Box flexDirection="row" columnGap={2}>{cancel('fermer')}</Box>
+        </Box>
+      )
+  }
 }
 
 function diffTree(ui: Ui, ctl: Controller, mode: DiffMode, width: number): RenderElement {
@@ -180,11 +327,11 @@ function message(
 }
 
 /** One selectable row: a plain Button whose label is the row's runs. */
-function row(ui: Ui, key: string, line: Segment[], isSelected: boolean, onPress: () => void): RenderElement {
+function row(ui: Ui, key: string, line: Segment[], isStart: boolean, onPress: () => void): RenderElement {
   const { Button } = ui
 
   return (
-    <Button key={key} plain {...(isSelected ? { autoFocus: true as const } : {})} onPress={onPress}>
+    <Button key={key} plain {...(isStart ? { autoFocus: true as const } : {})} onPress={onPress}>
       {segments(ui, line)}
     </Button>
   )
@@ -193,7 +340,6 @@ function row(ui: Ui, key: string, line: Segment[], isSelected: boolean, onPress:
 /** The keys, drawn as the Buttons their hotkeys press, wide or narrow. */
 function keys(ui: Ui, ctl: Controller, width: number, where: 'list' | 'diff' | 'message'): RenderElement {
   const { Box, Button, Text } = ui
-  const isWide = width >= 66
   const key = (hotkey: string, label: string, onPress: () => void) => (
     <Button key={`key-${hotkey}`} plain hotkey={hotkey} label={label} dimColor onPress={onPress} />
   )
@@ -217,14 +363,22 @@ function keys(ui: Ui, ctl: Controller, width: number, where: 'list' | 'diff' | '
     )
   }
 
+  // Long labels two apart, else one apart, else the short ones.
+  const gap = keysWidth(LONG_KEYS, 2) <= width ? 2 : 1
+  const labels = new Map(keysWidth(LONG_KEYS, gap) <= width ? LONG_KEYS : SHORT_KEYS)
+  const label = (hotkey: string) => labels.get(hotkey) ?? hotkey
+
   return (
-    <Box flexDirection="row" columnGap={isWide ? 2 : 1}>
-      {key('j', '↓', () => ctl.move(1))}
-      {key('k', '↑', () => ctl.move(-1))}
-      {isWide && <Text dimColor>⏎ déplier</Text>}
-      {key('e', isWide ? 'expliquer' : 'expl.', () => void ctl.explain())}
-      {key('r', isWide ? 'rafraîchir' : 'maj', () => void ctl.refresh())}
-      {key('q', isWide ? 'fermer' : '✕', () => void ctl.close())}
+    <Box flexDirection="row" flexWrap="wrap" columnGap={gap}>
+      {key('j', label('j'), () => ctl.move(1))}
+      {key('k', label('k'), () => ctl.move(-1))}
+      <Text dimColor>{`⏎ ${label('⏎')}`.trim()}</Text>
+      {key('e', label('e'), () => void ctl.explain())}
+      {key('c', label('c'), () => ctl.beginSwitch())}
+      {key('t', label('t'), () => ctl.beginTag())}
+      {key('p', label('p'), () => void ctl.beginPush())}
+      {key('r', label('r'), () => void ctl.refresh())}
+      {key('q', label('q'), () => void ctl.close())}
     </Box>
   )
 }
