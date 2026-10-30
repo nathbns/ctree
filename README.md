@@ -1,7 +1,6 @@
 # ctree
 
-Un mod Claude Code qui affiche le graphe git du dépôt dans un panneau à côté de la conversation, au plus près du graphe Source Control de VS Code et de l'extension Git Graph. Il suit en direct les commandes git que Claude lance, et marque d'un `✦` les commits créés pendant la session. Il lit git, et n'écrit que ce que tu confirmes : changer de branche, créer un tag, pousser, appliquer un stash, annuler une commande de Claude.
-
+Un mod Claude Code qui affiche le graphe git du dépôt dans un panneau à côté de la conversation, au plus près du graphe Source Control de VS Code et de l'extension Git Graph. Il suit en direct les commandes git que Claude lance, et marque d'un `✦` les commits créés pendant la session. Il lit git, et n'écrit que ce que tu confirmes : changer de branche, créer un tag, pousser, appliquer un stash, annuler une commande de claude.
 ```
 demo · ⎇ main · ✓ origin/main
   ◌     Modifications non commitées (2)
