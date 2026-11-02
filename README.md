@@ -63,7 +63,7 @@ The keys are the same in both languages. The notes ctree leaves for Claude (afte
 | --- | --- |
 | `j` / `k`, `↓` / `↑` | next / previous row (the rest of the history loads as you go down) |
 | `Enter` | on a commit: unfolds its files; on a file: shows its diff |
-| `g` | searches the message, the author, the hash or the files; `n` goes to the next result |
+| `g` | searches the message, the author, the hash or the files; `n` / `b` go to the next / previous result |
 | `i` | back to HEAD |
 | `m` | marks the selected commit; `d` on another compares them |
 | `d` | compares the selected commit with the mark (no mark: with HEAD) |
@@ -84,7 +84,9 @@ The keys are the same in both languages. The notes ctree leaves for Claude (afte
 | `q` | closes the pane; in another view (diff, comparison, results, journal, session, help), goes back |
 | `Esc` | closes the pane; cancels a change waiting; in another view, goes back; clears the current search; right after `e`, hands the keys back to the prompt without closing |
 
-The bottom of the pane shows the most used keys, as many as the width allows, and always `h: help`. The others work too: `h` lists them all. The wheel and Page↑/Page↓ scroll the list. In VS Code there are no keyboard shortcuts: you click the rows and the buttons.
+The bottom of the pane shows the most used keys, as many as the width allows, and always `h: help`. The others work too: `h` lists them all.
+
+Why not `/`, `?`, `G` or `N`, as in vim, less, tig or lazygit? Claude Code hands a mod's pane only digits and lowercase letters, and Shift+g arrives as `g`. So search is `g`, help is `h`, and the previous result is `b`. The wheel and Page↑/Page↓ scroll the list. In VS Code there are no keyboard shortcuts: you click the rows and the buttons.
 
 ## What it shows
 
@@ -122,7 +124,7 @@ The bottom of the pane shows the most used keys, as many as the width allows, an
   - a hash, when the text could be one;
   - in the stashes.
 
-  The results come newest first, with what matched (`message · file`). Enter on one selects it in the graph, even far back in the history: ctree loads up to it (5,000 commits at most), and past that shows it in focus. The commits found stand out in yellow, the header says `⌕ "proxy" 5/36`, `n` goes to the next, Esc clears the search. A search that takes too long (15 s) is stopped, and the list says so.
+  The results come newest first, with what matched (`message · file`). Enter on one selects it in the graph, even far back in the history: ctree loads up to it (5,000 commits at most), and past that shows it in focus. The commits found stand out in yellow, the header says `⌕ "proxy" 5/36`, `n` goes to the next, `b` to the previous, Esc clears the search. A search that takes too long (15 s) is stopped, and the list says so.
 - **`m` then `d`, compare.** `m` marks a commit (`⚑`), `d` on another opens the comparison, from the older to the newer:
 
   ```

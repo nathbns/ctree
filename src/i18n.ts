@@ -316,6 +316,7 @@ const EN = {
     up: '↑',
     open: ['open', ''],
     next: ['next', 'next'],
+    previous: ['previous', 'prev.'],
     apply: ['apply', 'apply'],
     search: ['search', 'find'],
     explain: ['explain', 'expl.'],
@@ -353,7 +354,7 @@ const EN = {
         ['⏎', 'open a commit (its files), then a file (its diff)'],
         ['i', 'back to HEAD'],
         ['g', 'search the message, the author, the hash or the files'],
-        ['n', 'next search result; Esc clears the search'],
+        ['n b', 'next, previous search result; Esc clears the search'],
       ]],
       ['Reading the history', [
         ['v', 'overview: folds the runs of commits with no branching'],
@@ -676,6 +677,7 @@ const FR: Messages = {
     up: '↑',
     open: ['ouvrir', ''],
     next: ['suivant', 'suiv.'],
+    previous: ['précédent', 'préc.'],
     apply: ['appliquer', 'appl.'],
     search: ['chercher', 'cherch.'],
     explain: ['expliquer', 'expl.'],
@@ -713,7 +715,7 @@ const FR: Messages = {
         ['⏎', 'ouvrir un commit (ses fichiers), puis un fichier (son diff)'],
         ['i', 'revenir à HEAD'],
         ['g', 'chercher dans le message, l’auteur, le hash ou les fichiers'],
-        ['n', 'résultat suivant de la recherche ; Échap efface la recherche'],
+        ['n b', 'résultat suivant, précédent de la recherche ; Échap efface la recherche'],
       ]],
       ['Lire l’historique', [
         ['v', 'vue d’ensemble : replie les suites de commits sans embranchement'],

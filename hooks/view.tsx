@@ -53,14 +53,14 @@ function listKeys(ctl: Controller): Key[] {
     short: short ?? '',
     ...(onPress ? { onPress } : {}),
   })
-  const next = key('n', said.next, () => void ctl.nextHit())
+  const results = [key('n', said.next, () => void ctl.nextHit(1)), key('b', said.previous, () => void ctl.nextHit(-1))]
   const apply = key('a', said.apply, () => ctl.beginApplyStash())
 
   return [
     key('j', [said.down, said.down], () => ctl.move(1)),
     key('k', [said.up, said.up], () => ctl.move(-1)),
     key('⏎', said.open),
-    ...(ctl.model.search ? [next] : []),
+    ...(ctl.model.search ? results : []),
     ...(isStash ? [apply] : []),
     key('g', said.search, () => ctl.beginSearch()),
     key('e', said.explain, () => void ctl.explain()),
@@ -77,7 +77,7 @@ function listKeys(ctl: Controller): Key[] {
     key('s', said.session, () => void ctl.openSession()),
     key('t', said.tag, () => ctl.beginTag()),
     ...(isStash ? [] : [apply]),
-    ...(ctl.model.search ? [] : [next]),
+    ...(ctl.model.search ? [] : results),
     key('z', ctl.placement === 'band' ? said.pane : said.wide, () => void ctl.zoom()),
     key('r', said.reload, () => void ctl.refresh()),
     key('q', said.close, () => void ctl.close()),

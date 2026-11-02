@@ -706,6 +706,13 @@ describe('searching', () => {
     await ctl.nextHit()
     expect(ctl.model.selected).toBe(`c:${h('4')}`)
 
+    // b goes back, past the first to the last.
+    await ctl.nextHit(-1)
+    expect(ctl.model.selected).toBe(`c:${h('7')}`)
+    expect(ctl.model.search?.index).toBe(1)
+    await ctl.nextHit(-1)
+    expect(ctl.model.selected).toBe(`c:${h('4')}`)
+
     expect(ctl.escape()).toBe('back')
     expect(ctl.model.search).toBeNull()
     expect(ctl.escape()).toBe('close')

@@ -1295,13 +1295,14 @@ export function createController(host: Host) {
       await reveal(hash)
     },
 
-    /** n: the search's next result, in the graph. */
-    async nextHit() {
+    /** n, b: the search's next or previous result, in the graph; past an end, round to the other. */
+    async nextHit(direction: 1 | -1 = 1) {
       const search = model.search
+      const count = search?.hashes.length ?? 0
 
-      if (!search || search.hashes.length === 0) return showNotice(t().notice.noSearch, false)
+      if (!search || count === 0) return showNotice(t().notice.noSearch, false)
 
-      const index = (search.index + 1) % search.hashes.length
+      const index = search.index < 0 ? (direction === 1 ? 0 : count - 1) : (search.index + direction + count) % count
       const hash = search.hashes[index]
 
       set({ search: { ...search, index } })

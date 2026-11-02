@@ -775,6 +775,12 @@ describe('finding, comparing, the help (lot B)', () => {
 
     expect((await rowTexts(ui)).find(row => row.startsWith('❯'))).toContain('Parsing de git log')
     expect((await ui.find({ type: 'Text', text: say(/⌕ "parsing" 1\/1/, /⌕ « parsing » 1\/1/) }))).toBeDefined()
+
+    // With a search on, n and b come first among the keys after ⏎ (short labels under 120 columns).
+    expect((await ui.find({ key: 'key-n' }))?.props.label).toBe(say('next', 'suiv.'))
+    expect((await ui.find({ key: 'key-b' }))?.props.label).toBe(say('prev.', 'préc.'))
+    await ui.press({ key: 'key-b' })
+    expect((await rowTexts(ui)).find(row => row.startsWith('❯'))).toContain('Parsing de git log')
     await ui.unmount()
   })
 

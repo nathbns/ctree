@@ -60,7 +60,7 @@ Les touches sont les mêmes dans les deux langues. Les notes que ctree laisse à
 | --- | --- |
 | `j` / `k`, `↓` / `↑` | ligne suivante / précédente (la suite de l'historique se charge en descendant) |
 | `Entrée` | sur un commit : déplie ses fichiers ; sur un fichier : affiche son diff |
-| `g` | cherche dans le message, l'auteur, le hash ou les fichiers ; `n` passe au résultat suivant |
+| `g` | cherche dans le message, l'auteur, le hash ou les fichiers ; `n` / `b` passent au résultat suivant / précédent |
 | `i` | revient à HEAD |
 | `m` | marque le commit sélectionné ; `d` sur un autre les compare |
 | `d` | compare le commit sélectionné avec la marque (sans marque : avec HEAD) |
@@ -81,7 +81,9 @@ Les touches sont les mêmes dans les deux langues. Les notes que ctree laisse à
 | `q` | ferme le panneau ; dans une autre vue (diff, comparaison, résultats, journal, session, aide), revient en arrière |
 | `Échap` | ferme le panneau ; annule une action en attente ; dans une autre vue, revient en arrière ; efface la recherche en cours ; juste après `e`, rend la main au prompt sans fermer |
 
-Le bas du panneau montre les touches les plus utilisées, autant que la largeur en permet, et toujours `h: aide`. Les autres marchent aussi : `h` les liste toutes. La molette et Page↑/Page↓ font défiler la liste. Dans VS Code, il n'y a pas de raccourcis clavier : on clique sur les lignes et les boutons.
+Le bas du panneau montre les touches les plus utilisées, autant que la largeur en permet, et toujours `h: aide`. Les autres marchent aussi : `h` les liste toutes.
+
+Pourquoi pas `/`, `?`, `G` ou `N`, comme dans vim, less, tig ou lazygit ? Claude Code ne transmet au panneau d'un mod que les chiffres et les lettres minuscules, et Maj+g arrive comme `g`. La recherche est donc sur `g`, l'aide sur `h`, et le résultat précédent sur `b`. La molette et Page↑/Page↓ font défiler la liste. Dans VS Code, il n'y a pas de raccourcis clavier : on clique sur les lignes et les boutons.
 
 ## Ce qui est affiché
 
@@ -119,7 +121,7 @@ Le bas du panneau montre les touches les plus utilisées, autant que la largeur 
   - un hash, quand le texte peut en être un ;
   - dans les stashs.
 
-  Les résultats s'affichent du plus récent au plus ancien, avec ce qui correspond (`message · fichier`). Entrée sur l'un d'eux le sélectionne dans le graphe, même loin dans l'historique : ctree charge jusqu'à lui (5 000 commits au plus), et au-delà le montre en focus. Les commits trouvés ressortent en jaune, l'en-tête dit `⌕ « proxy » 5/36`, `n` passe au suivant, Échap efface la recherche. Une recherche trop longue (15 s) est arrêtée, et la liste le dit.
+  Les résultats s'affichent du plus récent au plus ancien, avec ce qui correspond (`message · fichier`). Entrée sur l'un d'eux le sélectionne dans le graphe, même loin dans l'historique : ctree charge jusqu'à lui (5 000 commits au plus), et au-delà le montre en focus. Les commits trouvés ressortent en jaune, l'en-tête dit `⌕ « proxy » 5/36`, `n` passe au suivant, `b` au précédent, Échap efface la recherche. Une recherche trop longue (15 s) est arrêtée, et la liste le dit.
 - **`m` puis `d`, comparer.** `m` marque un commit (`⚑`), `d` sur un autre ouvre la comparaison, du plus ancien au plus récent :
 
   ```
