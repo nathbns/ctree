@@ -75,7 +75,10 @@ function world(on: On, script: Script = () => undefined, stored: Record<string, 
     if (!isReadOnly(args)) {
       writes.push(args)
 
-      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+      // The guard's copy of the changes a command throws away.
+      const stdout = args[0] === 'stash' && args[1] === 'create' ? `${h('5')}\n` : ''
+
+      return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
 
     const answer = script(args) ?? demoGit(args)
@@ -547,11 +550,12 @@ describe('the guard and the journal (V3, lot C)', () => {
 
     await ui.press({ key: entry?.key ?? '' })
 
-    // One way back: the band shows it, and nothing runs before y.
-    expect(await ui.find({ type: 'Text', text: /git reset --keep 3333333/ })).toBeDefined()
+    // Two ways back, each by every command it runs (the changed file was saved first); nothing runs before a choice.
+    expect((await ui.find({ key: 'act-1' }))?.props.label).toBe('git reset --keep 3333333')
+    expect((await ui.find({ key: 'act-2' }))?.props.label).toBe('git reset --keep 3333333 && git stash apply 5555555')
     expect(w.writes.filter(args => args[0] !== 'stash')).toEqual([])
 
-    await ui.press({ key: 'act-y' })
+    await ui.press({ key: 'act-1' })
     await w.clock.settle()
 
     expect(w.writes.filter(args => args[0] !== 'stash')).toEqual([['reset', '--keep', h('3')]])

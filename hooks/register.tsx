@@ -6,6 +6,7 @@
 
 import type { EngineInterface, Register } from 'claude-code'
 
+import { buildDemo, DEMO_COMMAND, isDemoFile, isDemoRoot, isDemoRun, repoOf, ROOT_TEMPLATE } from '../src/demo'
 import { isAllowedWrite } from '../src/git-actions'
 import { GIT_ENV, isReadOnly, READ_FLAGS } from '../src/git-commands'
 import { gitCalls, riskOf } from '../src/guard'
@@ -132,6 +133,49 @@ function hostOf($: EngineInterface, siteId: () => string): Host {
   }
 }
 
+/**
+ * /ctree demo: a demo repository in a new temporary folder, then how to try
+ * the guard on it. Its writes have their own guard (src/demo.ts): under the
+ * folder mktemp just made, empty, and nowhere else.
+ */
+async function buildDemoRepository($: EngineInterface): Promise<string> {
+  const said = t().demo
+  const tmp = ((await $.env.get('TMPDIR').catch(() => undefined)) || '/tmp').replace(/\/+$/, '')
+  const made = await $.process.run(['mktemp', '-d', `${tmp}/${ROOT_TEMPLATE}`], { timeoutMs: 10_000 }).catch(() => null)
+  const root = made?.exitCode === 0 ? made.stdout.trim() : ''
+  const isEmpty = isDemoRoot(root) && (await $.fs.list(root).catch(() => null))?.length === 0
+
+  if (!isEmpty) return said.noFolder
+
+  const result = await buildDemo(root, {
+    git: async run => {
+      if (!isDemoRun(root, run)) throw new Error(t().pane.refused(run.args.join(' ')))
+
+      const ran = await $.process.run(['git', ...READ_FLAGS, ...run.args], {
+        cwd: run.cwd,
+        env: { ...GIT_ENV, ...run.env },
+        timeoutMs: GIT_TIMEOUT_MS,
+      })
+
+      return { code: ran.exitCode, stderr: ran.stderr }
+    },
+    file: async (path, text) => {
+      if (!isDemoFile(root, path)) throw new Error(t().pane.refused(path))
+
+      await $.fs.write(path, text)
+    },
+  }).catch(error => ({ ok: false as const, step: 'ctree demo', error: error instanceof Error ? error.message : String(error) }))
+
+  if (!result.ok) return said.failed(result.step, result.error)
+
+  const repo = repoOf(root)
+  // Installed, the plugin loads by itself; loaded from a folder, the new session needs that folder too.
+  const isInstalled = $.plugin.root.includes('/.claude/plugins/')
+  const launch = `cd '${repo}' && claude${isInstalled ? '' : ` --plugin-dir '${$.plugin.root}'`}`
+
+  return said.ready(repo, launch, said.prompt(DEMO_COMMAND))
+}
+
 export const register: Register = (on, options) => {
   let ctl: Controller | null = null
   // The guard asks a person: on unless turned off, and only where someone can answer.
@@ -153,6 +197,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'ctree',
       description: t().pane.description,
+      argumentHint: t().pane.argumentHint,
       immediate: true,
     })
 
@@ -169,6 +214,16 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'ctree' }, async ($, e) => {
+    const arg = e.args.trim()
+
+    if (arg === 'demo') {
+      return { text: await buildDemoRepository($) }
+    }
+
+    if (arg !== '') {
+      return { text: t().pane.unknown(arg) }
+    }
+
     if (!ctl) {
       return { text: t().pane.starting }
     }

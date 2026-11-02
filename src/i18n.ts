@@ -402,14 +402,32 @@ const EN = {
   },
   pane: {
     description: 'The repository’s git graph in a pane beside the conversation',
-    starting: 'ctree: the session is still starting, try again in a moment.',
-    inBand: 'ctree is shown above the prompt, full width. Ctrl+X Tab (or a click) to drive it, z to put it back in a pane.',
-    notPlaced: (reason: string) => `ctree: ${reason}`,
+    starting: 'The session is still starting: try again in a moment.',
+    inBand: 'Shown above the prompt, full width. Ctrl+X Tab (or a click) to drive it, z to put it back in a pane.',
+    notPlaced: (reason: string) => reason,
     back: 'back to the list',
     kept: 'the pane stays open',
     loading: 'ctree is starting…',
     readOnly: (command: string) => `ctree only runs reads here: git ${command} refused`,
     refused: (command: string) => `ctree refuses this write: git ${command}`,
+    argumentHint: '[demo]',
+    unknown: (arg: string) => `Unknown argument "${arg}". /ctree opens the pane; /ctree demo builds a demo repository to try it on.`,
+  },
+  demo: {
+    noFolder: 'The demo needs a new temporary folder, and none could be made (mktemp -d).',
+    failed: (step: string, error: string) => `The demo stopped: ${step} failed${error ? `: ${error}` : ''}.`,
+    prompt: (command: string) => `Drop my last two commits and my local changes: run ${command}`,
+    ready: (repo: string, launch: string, prompt: string) =>
+      [
+        `Demo repository ready in ${repo}`,
+        '  main is 2 commits ahead of origin/main, with a merge, two tags, a branch never pushed, a stash and uncommitted changes.',
+        '',
+        'Try the guard:',
+        `  1. In a terminal: ${launch}`,
+        '  2. Type /ctree to open the graph.',
+        `  3. Paste this prompt: ${prompt}`,
+        '  4. ctree holds the command and says what it would lose. Let it run, then press u in the pane to undo it.',
+      ].join('\n'),
   },
 }
 
@@ -763,14 +781,32 @@ const FR: Messages = {
   },
   pane: {
     description: 'Graphe git du dépôt dans un panneau à côté de la conversation',
-    starting: 'ctree : la session démarre encore, réessaie dans un instant.',
-    inBand: 'ctree s’affiche au-dessus du prompt, sur toute la largeur. Ctrl+X Tab (ou un clic) pour le piloter, z pour le remettre en panneau.',
-    notPlaced: reason => `ctree : ${reason}`,
+    starting: 'La session démarre encore : réessaie dans un instant.',
+    inBand: 'Affiché au-dessus du prompt, sur toute la largeur. Ctrl+X Tab (ou un clic) pour le piloter, z pour le remettre en panneau.',
+    notPlaced: reason => reason,
     back: 'retour à la liste',
     kept: 'le panneau reste ouvert',
     loading: 'ctree démarre…',
     readOnly: command => `ctree ne lance que des lectures ici : git ${command} refusé`,
     refused: command => `ctree refuse cette écriture : git ${command}`,
+    argumentHint: '[demo]',
+    unknown: arg => `Argument « ${arg} » inconnu. /ctree ouvre le panneau ; /ctree demo crée un dépôt de démonstration pour l’essayer.`,
+  },
+  demo: {
+    noFolder: 'La démo a besoin d’un dossier temporaire neuf, et aucun n’a pu être créé (mktemp -d).',
+    failed: (step, error) => `La démo s’est arrêtée : ${step} a échoué${error ? ` : ${error}` : ''}.`,
+    prompt: command => `Supprime mes deux derniers commits et mes modifications locales : lance ${command}`,
+    ready: (repo, launch, prompt) =>
+      [
+        `Dépôt de démonstration prêt dans ${repo}`,
+        '  main a 2 commits d’avance sur origin/main, avec un merge, deux tags, une branche jamais poussée, un stash et des modifications non commitées.',
+        '',
+        'Pour essayer le garde-fou :',
+        `  1. Dans un terminal : ${launch}`,
+        '  2. Tape /ctree pour ouvrir le graphe.',
+        `  3. Colle ce prompt : ${prompt}`,
+        '  4. ctree retient la commande et dit ce qu’elle perdrait. Laisse-la passer, puis appuie sur u dans le panneau pour l’annuler.',
+      ].join('\n'),
   },
 }
 

@@ -322,7 +322,10 @@ function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderEle
       return (
         <Box flexDirection="column">
           <Text bold>{line(band.title)}</Text>
-          {band.actions.slice(0, 9).map((action, i) => act(String(i + 1), line(displayCommand(action.args)), () => void ctl.confirm(i)))}
+          {/* Each choice by every command it runs: two undos differ only in their last one. */}
+          {band.actions.slice(0, 9).map((action, i) =>
+            act(String(i + 1), line([action.args, ...(action.then ?? [])].map(displayCommand).join(' && ')), () => void ctl.confirm(i)),
+          )}
           <Box flexDirection="row" columnGap={2}>{cancel()}</Box>
         </Box>
       )

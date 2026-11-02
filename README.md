@@ -48,6 +48,23 @@ Then `/ctree` at the prompt.
   - The choice is kept: `/ctree` opens where you left it.
 - **Otherwise**, it opens above the prompt, as tall as there is room. `/tui fullscreen` switches to fullscreen.
 
+## Try it on a demo repository
+
+`/ctree demo` builds a throwaway repository in a new temporary folder: two authors, a remote (a bare repository beside it, as `origin`), a merge, two tags, a branch never pushed, a stash, two commits not pushed yet and uncommitted changes. Names and dates are fixed, so the hashes are the same on every machine, and so are screenshots. Then it says how to try the guard:
+
+```
+Demo repository ready in /var/folders/…/T/ctree-demo.bPDDXeIJ/demo
+  main is 2 commits ahead of origin/main, with a merge, two tags, a branch never pushed, a stash and uncommitted changes.
+
+Try the guard:
+  1. In a terminal: cd '/var/folders/…/T/ctree-demo.bPDDXeIJ/demo' && claude
+  2. Type /ctree to open the graph.
+  3. Paste this prompt: Drop my last two commits and my local changes: run git reset --hard HEAD~2
+  4. ctree holds the command and says what it would lose. Let it run, then press u in the pane to undo it.
+```
+
+The demo writes only under the folder it just made, through a guard of its own (`src/demo.ts`): git is pinned to the demo's repositories (`GIT_DIR`, `GIT_WORK_TREE`), your git config is left out, and only the commands the build uses pass.
+
 ## Language
 
 ctree speaks English and French. The `language` option picks one (`/plugin configure ctree@ctree` once installed; with `--plugin-dir`, `pluginConfigs` → `ctree@inline` → `language`):
@@ -250,6 +267,7 @@ The mod runs git without a shell, passing the arguments directly (`$.process.run
   - `reset --keep|--soft <hash>`, `stash apply <hash>` (`a`, or bringing back thrown-away files), and `stash create` (the safety copy).
 
   It refuses everything else: `--force`, a `+…` or `:…` refspec, `--delete`, `tag -d`, `reset --hard`, any remote ref, and so on. These writes run only after `y`, except `stash create`, which changes neither the files nor the branches.
+- `/ctree demo` has a guard of its own (`src/demo.ts`, `isDemoRun` and `isDemoFile`), apart from `isAllowedWrite`: only under the new folder `mktemp -d` just made, empty, with `GIT_DIR` and `GIT_WORK_TREE` naming the demo's repositories, and only the shapes the build uses (no force, no delete, no reset, `origin` the bare repository beside it).
 - Every call also passes `--no-optional-locks`, `-c core.fsmonitor=false` and `-c log.showSignature=false`; diffs pass `--no-ext-diff --no-textconv`. A repository can thus neither have its index written nor start a program it configures.
 
 ## Layout
@@ -259,11 +277,12 @@ src/      the pure core, with no Claude Code dependency: git commands, parsing,
           lane layout, colours, labels, columns, rows,
           overview (folding), actions (branch, tag, push) and their guard,
           guard (guard.ts), journal and undo (journal.ts), session view,
-          search (search.ts), strings in English and French (i18n.ts)
+          search (search.ts), strings in English and French (i18n.ts),
+          the demo repository and its guard (demo.ts)
 hooks/    the mod: register.tsx (hooks), controller.ts (state), view.tsx (drawing)
 types/    the $.state contract (the refs at the session's start, for ✦; the journal)
 tests/    lanes, parsing, labels and colours, rows, overview, actions, guard,
-          journal, search, strings, controller, the mounted pane
+          journal, search, strings, demo, controller, the mounted pane
 ```
 
 ## Develop
@@ -271,7 +290,7 @@ tests/    lanes, parsing, labels and colours, rows, overview, actions, guard,
 From the repository's folder:
 
 ```sh
-claude plugin test .         # 267 tests
+claude plugin test .         # 280 tests
 claude plugin validate .
 npx -p typescript tsc -p .   # after a first run with --plugin-dir,
                              # which lays the types in .claude-plugin/types/

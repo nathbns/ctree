@@ -45,6 +45,23 @@ Puis `/ctree` au prompt.
   - Le choix est retenu : `/ctree` rouvre là où tu l'as laissé.
 - **Sinon**, il s'ouvre au-dessus du prompt, aussi haut que la place le permet. `/tui fullscreen` passe en plein écran.
 
+## L'essayer sur un dépôt de démonstration
+
+`/ctree demo` crée un dépôt jetable dans un dossier temporaire neuf : deux auteurs, un dépôt distant (un dépôt nu à côté, comme `origin`), un merge, deux tags, une branche jamais poussée, un stash, deux commits pas encore poussés et des modifications non commitées. Les noms et les dates sont fixes : les hashs sont les mêmes sur toutes les machines, et les captures aussi. Puis il dit comment essayer le garde-fou :
+
+```
+Dépôt de démonstration prêt dans /var/folders/…/T/ctree-demo.bPDDXeIJ/demo
+  main a 2 commits d’avance sur origin/main, avec un merge, deux tags, une branche jamais poussée, un stash et des modifications non commitées.
+
+Pour essayer le garde-fou :
+  1. Dans un terminal : cd '/var/folders/…/T/ctree-demo.bPDDXeIJ/demo' && claude
+  2. Tape /ctree pour ouvrir le graphe.
+  3. Colle ce prompt : Supprime mes deux derniers commits et mes modifications locales : lance git reset --hard HEAD~2
+  4. ctree retient la commande et dit ce qu’elle perdrait. Laisse-la passer, puis appuie sur u dans le panneau pour l’annuler.
+```
+
+La démo n'écrit que dans le dossier qu'elle vient de créer, par une garde à elle (`src/demo.ts`) : git est attaché aux dépôts de la démo (`GIT_DIR`, `GIT_WORK_TREE`), ta config git est laissée de côté, et seules les commandes de la construction passent.
+
 ## Langue
 
 ctree parle anglais et français. L'option `language` choisit (`/plugin configure ctree@ctree` une fois installé ; avec `--plugin-dir`, `pluginConfigs` → `ctree@inline` → `language`) :
@@ -247,6 +264,7 @@ Le mod lance git sans shell, en passant les arguments directement (`$.process.ru
   - `reset --keep|--soft <hash>`, `stash apply <hash>` (`a`, ou la récupération de fichiers jetés), et `stash create` (la copie de sauvegarde).
 
   Elle refuse tout le reste : `--force`, refspec `+…` ou `:…`, `--delete`, `tag -d`, `reset --hard`, toute référence distante, etc. Ces écritures ne partent qu'après `y`, sauf `stash create`, qui ne modifie ni les fichiers ni les branches.
+- `/ctree demo` a une garde à lui (`src/demo.ts`, `isDemoRun` et `isDemoFile`), distincte de `isAllowedWrite` : seulement sous le dossier neuf et vide que `mktemp -d` vient de créer, avec `GIT_DIR` et `GIT_WORK_TREE` qui nomment les dépôts de la démo, et seulement les formes de la construction (ni force, ni suppression, ni reset, `origin` étant le dépôt nu d'à côté).
 - Chaque appel passe aussi `--no-optional-locks`, `-c core.fsmonitor=false` et `-c log.showSignature=false` ; les diffs passent `--no-ext-diff --no-textconv`. Un dépôt ne peut donc ni écrire son index ni lancer un programme configuré.
 
 ## Structure
@@ -256,11 +274,12 @@ src/      cœur pur, sans dépendance à Claude Code : commandes git, parsing,
           calcul des lanes, couleurs, étiquettes, mise en page, lignes,
           vue d'ensemble (repliement), actions (branche, tag, push) et leur garde,
           garde-fou (guard.ts), journal et annulation (journal.ts), vue session,
-          recherche (search.ts), textes en anglais et en français (i18n.ts)
+          recherche (search.ts), textes en anglais et en français (i18n.ts),
+          le dépôt de démonstration et sa garde (demo.ts)
 hooks/    le mod : register.tsx (hooks), controller.ts (état), view.tsx (rendu)
 types/    contrat $.state (l'état des refs au début de la session, pour ✦ ; le journal)
 tests/    lanes, parsing, étiquettes et couleurs, lignes, vue d'ensemble, actions, garde-fou,
-          journal, recherche, textes, contrôleur, panneau monté
+          journal, recherche, textes, démo, contrôleur, panneau monté
 ```
 
 ## Développer
@@ -268,7 +287,7 @@ tests/    lanes, parsing, étiquettes et couleurs, lignes, vue d'ensemble, actio
 Depuis le dossier du dépôt :
 
 ```sh
-claude plugin test .         # 267 tests
+claude plugin test .         # 280 tests
 claude plugin validate .
 npx -p typescript tsc -p .   # après un premier lancement avec --plugin-dir,
                              # qui dépose les types dans .claude-plugin/types/
