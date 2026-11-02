@@ -10,7 +10,7 @@ export type CtreeRefState = { refs: Record<string, string>; head: CtreeHead }
 /** One ref a git command moved: null before when it made it, null after when it deleted it. */
 export type CtreeRefMove = { ref: string; before: string | null; after: string | null }
 
-/** One git command Claude ran that changed refs or threw changes away. */
+/** One git command Claude ran that changed refs or threw changes away, or a rewind ctree ran. */
 export type CtreeJournalEntry = {
   id: string
   /** Milliseconds since the epoch. */
@@ -27,6 +27,13 @@ export type CtreeJournalEntry = {
   saved?: string
   savedFiles?: number
   isUndone?: true
+  /** The start of the person's prompt that turn, to find it again as Claude Code's /rewind lists it. */
+  prompt?: string
+  /** Made by ctree's rewind of git to before turn `rewoundTo`, not by Claude. */
+  isRewind?: true
+  rewoundTo?: number
+  /** Put back by a rewind: that rewind's entry id. */
+  rewoundBy?: string
 }
 
 /** The refs when the session started, for the session view. */

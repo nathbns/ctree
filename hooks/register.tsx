@@ -243,6 +243,29 @@ export const register: Register = (on, options) => {
     return opened.isPlaced ? {} : { text: t().pane.notPlaced(opened.reason) }
   })
 
+  // PROBE (temporary): what a mod sees of /rewind.
+  const probe = async ($: EngineInterface, line: string) => {
+    const file = '/private/tmp/claude-501/-Users-nath-Desktop-ctree/40e481b8-ffe8-4e39-b68e-225d43568837/scratchpad/probe.log'
+    const old = await $.fs.read(file).catch(() => '')
+
+    await $.fs.write(file, `${old}${line}\n`)
+  }
+
+  on('command.run', async ($, e, next) => {
+    await probe($, `command.run ${e.command} args=${JSON.stringify(e.args)} turns=${await $.session.turns()}`)
+    const result = await next(e)
+    const messages = await $.session.messages()
+    await probe($, `after ${e.command} turns=${await $.session.turns()} messages=${messages.length} users=${JSON.stringify(messages.filter(m => m.role === 'user').map(m => [m.text.slice(0, 60), m.toolResults?.length ?? 0]))}`)
+    return result
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    await probe($, `prompt.submit ${JSON.stringify(e.text.slice(0, 40))} turns=${await $.session.turns()}`)
+    const result = await next(e)
+    await probe($, `after submit turns=${await $.session.turns()}`)
+    return result
+  })
+
   // Placed in the band (z), ctree draws above the prompt, the terminal's whole width.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (!ctl || ctl.placement !== 'band' || !ctl.isOpen || e.props.hasSurvey) {

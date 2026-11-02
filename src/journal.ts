@@ -17,8 +17,8 @@ export type RefMove = CtreeRefMove
 /** The value `update-ref` reads as "this ref must not exist". */
 export const ZERO = '0'.repeat(40)
 
-/** Journal entries kept, newest first. */
-export const JOURNAL_SIZE = 50
+/** Journal entries kept, newest first: enough to rewind a long session's turns. */
+export const JOURNAL_SIZE = 200
 
 /** The refs and HEAD now; null outside a repository. */
 export async function readRefState(git: GitRunner, cwd: string): Promise<RefState | null> {
@@ -73,6 +73,7 @@ export function journalEntry(input: {
   before: RefState
   after: RefState
   saved?: { hash: string; files: number }
+  prompt?: string | null
 }): JournalEntry | null {
   const moves = diffRefs(input.before, input.after)
 
@@ -89,7 +90,15 @@ export function journalEntry(input: {
     moves,
     head: { before: input.before.head, after: input.after.head },
     ...(input.saved ? { saved: input.saved.hash, savedFiles: input.saved.files } : {}),
+    ...(input.prompt ? { prompt: promptStart(input.prompt) } : {}),
   }
+}
+
+/** A prompt's first line, cut to 80 characters: what the journal shows of a turn. */
+export function promptStart(prompt: string): string {
+  const line = prompt.trim().split('\n')[0]?.trim() ?? ''
+
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line
 }
 
 /** The journal with one more entry, newest first, kept to JOURNAL_SIZE. */

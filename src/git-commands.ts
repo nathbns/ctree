@@ -168,6 +168,19 @@ export const cleanDryRun = (flags: { dirs: boolean; ignored: 'no' | 'also' | 'on
   '--', ...paths,
 ]
 
+/**
+ * Commits reachable from the revisions stdin names, not from the ones it
+ * names `^hash`; 50 at most (one more tells there are more).
+ */
+export const logFromStdin = (): string[] => [
+  'log', '-z', '--no-color', '--no-decorate', COMMIT_FORMAT, '-n51', '--stdin', '--',
+]
+
+/** The paths that differ between two commits. */
+export const namesBetween = (from: string, to: string): string[] => [
+  'diff', '-z', '--name-only', '--no-ext-diff', from, to, '--',
+]
+
 /** How many commits `to` has that `from` lacks. */
 export const countRange = (from: string, to: string): string[] => ['rev-list', '--count', `${from}..${to}`, '--']
 
