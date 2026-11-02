@@ -4,6 +4,7 @@ import { colorPaths, HEAD_COLOR, PALETTE } from '../src/colors'
 import { computeGraph } from '../src/lanes'
 import { labelsByCommit, labelText, refsByCommit } from '../src/labels'
 import type { Ref } from '../src/types'
+import { inBoth } from './fixtures'
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
@@ -61,10 +62,10 @@ describe('labels', () => {
     expect(labels.get(A)?.[0]).toMatchObject({ kind: 'branch', isHead: true })
   })
 
-  test('a detached HEAD has a label of its own, first', () => {
+  inBoth('a detached HEAD has a label of its own, first', say => {
     const refs: Ref[] = [{ kind: 'tag', name: 'v2', target: C }]
 
-    expect(texts(refs, { kind: 'detached', hash: C })).toEqual({ c: ['HEAD détachée', '◇ v2'] })
+    expect(texts(refs, { kind: 'detached', hash: C })).toEqual({ c: [say('detached HEAD', 'HEAD détachée'), '◇ v2'] })
   })
 
   test('a branch checked out in another worktree says so', () => {

@@ -2,7 +2,26 @@
 // tests: main with a merged feature, a branch ahead of it, a tag, a remote,
 // two uncommitted files.
 
+import { test } from 'claude-code/testing'
+
+import { type Language, LANGUAGES, setLanguage } from '../src/i18n'
 import type { Commit, RepoSnapshot } from '../src/types'
+
+/** Picks the text a test expects in the language it runs in. */
+export type Say = <T>(en: T, fr: T) => T
+
+/**
+ * A test run once per language, the language set first: `say(en, fr)` picks
+ * what it expects. Every test that checks a string the person sees runs so.
+ */
+export function inBoth(name: string, body: (say: Say, language: Language) => void | Promise<void>): void {
+  for (const language of LANGUAGES) {
+    test(`${name} (${language})`, async () => {
+      setLanguage(language)
+      await body((en, fr) => (language === 'fr' ? fr : en), language)
+    })
+  }
+}
 
 /** A full-length hash made of one repeated hex digit: `h('a')`. */
 export const h = (digit: string): string => digit.repeat(40)

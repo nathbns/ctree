@@ -7,6 +7,7 @@ import type { CtreeHead, CtreeJournalEntry, CtreeRefMove, CtreeRefState } from '
 import * as Cmd from './git-commands'
 import { FIELD } from './git-commands'
 import { keepsFiles } from './guard'
+import { type Messages, t } from './i18n'
 import type { GitRunner } from './types'
 
 export type RefState = CtreeRefState
@@ -105,25 +106,26 @@ export function shortRef(ref: string): string {
 
 const short = (hash: string | null) => (hash ? hash.slice(0, 7) : '∅')
 
-/** What an entry did, one phrase per ref, for the journal's second line. */
-export function describeMoves(entry: JournalEntry): string[] {
+/** What an entry did, one phrase per ref, for the journal's second line (and, in English, Claude's note). */
+export function describeMoves(entry: JournalEntry, m: Messages = t()): string[] {
+  const said = m.journal
   const out: string[] = []
   const { before, after } = entry.head
 
   if (before.branch !== after.branch) {
-    out.push(`HEAD : ${before.branch ?? short(before.hash)} → ${after.branch ?? `détachée ${short(after.hash)}`}`)
+    out.push(said.headMoved(before.branch ?? short(before.hash), after.branch ?? said.detachedAt(short(after.hash))))
   }
 
   for (const move of entry.moves) {
     const name = `${move.ref.startsWith('refs/tags/') ? '◇ ' : ''}${shortRef(move.ref)}`
 
-    if (move.before === null) out.push(`${name} créée`)
-    else if (move.after === null) out.push(`${name} supprimée (était ${short(move.before)})`)
+    if (move.before === null) out.push(said.created(name))
+    else if (move.after === null) out.push(said.deleted(name, short(move.before)))
     else out.push(`${name} ${short(move.before)} → ${short(move.after)}`)
   }
 
   if (entry.saved) {
-    out.push(`${entry.savedFiles ?? 0} fichier${(entry.savedFiles ?? 0) > 1 ? 's' : ''} modifié${(entry.savedFiles ?? 0) > 1 ? 's' : ''} sauvé${(entry.savedFiles ?? 0) > 1 ? 's' : ''} avant`)
+    out.push(said.saved(entry.savedFiles ?? 0))
   }
 
   return out
@@ -148,17 +150,18 @@ export type UndoPlan = {
  * moved again since is left alone; a remote ref is never touched.
  */
 export function undoPlan(entry: JournalEntry, now: RefState): UndoPlan {
+  const said = t().journal
   const notes: string[] = []
   const restorable: RefMove[] = []
 
   for (const move of entry.moves) {
     if (!isLocal(move.ref)) {
-      notes.push(`${shortRef(move.ref)} : déjà sur le dépôt distant, non annulable ici (il faudrait un push forcé)`)
+      notes.push(said.onRemote(shortRef(move.ref)))
       continue
     }
 
     if ((now.refs[move.ref] ?? null) !== move.after) {
-      notes.push(`${shortRef(move.ref)} a bougé depuis : laissé tel quel`)
+      notes.push(said.movedSince(shortRef(move.ref)))
       continue
     }
 
@@ -171,7 +174,7 @@ export function undoPlan(entry: JournalEntry, now: RefState): UndoPlan {
   const switchBack = isHeadMoved && isHeadAsLeft && (before.branch !== null || before.hash !== null)
 
   if (isHeadMoved && !isHeadAsLeft) {
-    notes.push('HEAD a changé depuis : laissé où il est')
+    notes.push(said.headMovedSince)
   }
 
   const finalBranch = switchBack ? before.branch : now.head.branch
@@ -197,7 +200,7 @@ export function undoPlan(entry: JournalEntry, now: RefState): UndoPlan {
   for (const move of restorable) {
     if (move.before === null && move.after !== null) {
       if (move.ref === finalRef) {
-        notes.push(`${shortRef(move.ref)} est la branche courante : gardée`)
+        notes.push(said.currentKept(shortRef(move.ref)))
       } else {
         steps.push(['update-ref', '-d', move.ref, move.after])
       }

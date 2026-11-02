@@ -5,6 +5,7 @@
 import * as Cmd from './git-commands'
 import type { SearchBy } from './git-commands'
 import { parseLog } from './git-parse'
+import { t } from './i18n'
 import { stashCommit } from './rows'
 import type { Commit, GitRunner, RepoSnapshot } from './types'
 
@@ -111,9 +112,9 @@ export async function search(git: GitRunner, snapshot: RepoSnapshot, text: strin
   }
 }
 
-/** How a hit matched, in a word each: `message · fichier`. */
+/** How a hit matched, in a word each: `message · file`. */
 export function matchWords(by: readonly MatchKind[]): string {
-  const words: Record<MatchKind, string> = { message: 'message', author: 'auteur', hash: 'hash', path: 'fichier' }
+  const words: Record<MatchKind, string> = t().search.words
 
   return by.map(kind => words[kind]).join(' · ')
 }

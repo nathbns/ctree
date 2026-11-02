@@ -3,6 +3,7 @@
 // (`main ⇄ origin`); apart, the branch says how far (`main ↑2 ↓1`). HEAD's
 // branch comes first, a detached HEAD has its own.
 
+import { t } from './i18n'
 import type { HeadState, Ref, Worktree } from './types'
 
 export type Label =
@@ -104,7 +105,7 @@ export function labelText(label: Label): string {
     case 'tag':
       return `◇ ${label.name}`
     case 'detached':
-      return 'HEAD détachée'
+      return t().detached
     case 'stash':
       return `≡ ${label.name}`
   }

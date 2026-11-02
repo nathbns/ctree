@@ -2,7 +2,8 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { isAllowedWrite } from '../src/git-actions'
 import { describeMoves, diffRefs, journalEntry, type RefState, undoPlan, ZERO } from '../src/journal'
-import { h } from './fixtures'
+import { messages } from '../src/i18n'
+import { h, inBoth } from './fixtures'
 
 const state = (refs: Record<string, string>, branch: string | null, hash: string | null): RefState => ({ refs, head: { branch, hash } })
 
@@ -15,7 +16,7 @@ const entryOf = (command: string, before: RefState, after: RefState, saved?: { h
 }
 
 describe('the journal', () => {
-  test('records what a command moved, and nothing for a command that moved nothing', () => {
+  inBoth('records what a command moved, and nothing for a command that moved nothing', say => {
     const before = state({ 'refs/heads/main': h('a'), 'refs/tags/v1': h('a') }, 'main', h('a'))
     const after = state({ 'refs/heads/main': h('b'), 'refs/heads/topic': h('b') }, 'topic', h('b'))
 
@@ -25,12 +26,15 @@ describe('the journal', () => {
       { ref: 'refs/tags/v1', before: h('a'), after: null },
     ])
     expect(journalEntry({ at: 1, turn: 1, command: 'git log', isSubagent: false, before, after: before })).toBeNull()
-    expect(describeMoves(entryOf('x', before, after))).toEqual([
-      'HEAD : main → topic',
-      'main aaaaaaa → bbbbbbb',
-      'topic créée',
-      '◇ v1 supprimée (était aaaaaaa)',
-    ])
+    expect(describeMoves(entryOf('x', before, after))).toEqual(say(
+      ['HEAD: main → topic', 'main aaaaaaa → bbbbbbb', 'topic created', '◇ v1 deleted (was aaaaaaa)'],
+      ['HEAD : main → topic', 'main aaaaaaa → bbbbbbb', 'topic créée', '◇ v1 supprimée (était aaaaaaa)'],
+    ))
+    // What Claude's note says, in English whatever the language.
+    expect(describeMoves(entryOf('x', before, after), messages('en'))[2]).toBe('topic created')
+    const still = state({ 'refs/heads/main': h('a') }, 'main', h('a'))
+
+    expect(describeMoves(entryOf('x', still, still, { hash: h('5'), files: 2 }))).toEqual([say('2 changed files saved first', '2 fichiers modifiés sauvés avant')])
   })
 
   test('a command that only threw changes away is kept, for its saved copy', () => {
@@ -76,17 +80,20 @@ describe('undoing', () => {
     expect(undoPlan(entryOf('git branch -D spike', before, after), after).steps).toEqual([['update-ref', 'refs/heads/spike', h('c'), ZERO]])
   })
 
-  test('a ref that moved again since, and a push, are left alone and said so', () => {
+  inBoth('a ref that moved again since, and a push, are left alone and said so', say => {
     const before = state({ 'refs/heads/main': h('a'), 'refs/remotes/origin/main': h('a') }, 'main', h('a'))
     const after = state({ 'refs/heads/main': h('b'), 'refs/remotes/origin/main': h('b') }, 'main', h('b'))
     const now = state({ 'refs/heads/main': h('c'), 'refs/remotes/origin/main': h('b') }, 'main', h('c'))
     const plan = undoPlan(entryOf('git commit -m x && git push', before, after), now)
 
     expect(plan.steps).toEqual([])
-    expect(plan.notes).toEqual([
+    expect(plan.notes).toEqual(say([
+      'main moved since: left as it is',
+      'origin/main: already on the remote, cannot be undone here (it would take a force push)',
+    ], [
       'main a bougé depuis : laissé tel quel',
       'origin/main : déjà sur le dépôt distant, non annulable ici (il faudrait un push forcé)',
-    ])
+    ]))
   })
 
   test('a rebase of a branch HEAD has left since: the branch moves back, HEAD stays', () => {

@@ -3,6 +3,7 @@
 
 import * as Cmd from './git-commands'
 import { joinChanges, parseLog, parseNameStatus, parseNumstat } from './git-parse'
+import { t } from './i18n'
 import { diffRefs, type RefState, shortRef } from './journal'
 import type { Commit, FileChange, GitRunner } from './types'
 
@@ -99,11 +100,5 @@ export function prDescriptionPrompt(data: SessionData): string {
   const added = data.files.reduce((sum, file) => sum + (file.added ?? 0), 0)
   const deleted = data.files.reduce((sum, file) => sum + (file.deleted ?? 0), 0)
 
-  return (
-    `Rédige la description de pull request de ce que cette session a changé` +
-    (refs.length ? ` (branches ${refs.join(', ')})` : '') +
-    ` : ${data.commits.length} commits, ${data.files.length} fichiers (+${added} −${deleted}). ` +
-    `Lis-les avec git log et git diff ${data.headBefore?.slice(0, 7) ?? ''}..HEAD. ` +
-    'Donne un titre, un résumé, la liste des changements et ce qu’il faut vérifier.'
-  )
+  return t().ask.pr(refs, data.commits.length, data.files.length, added, deleted, data.headBefore?.slice(0, 7) ?? '')
 }

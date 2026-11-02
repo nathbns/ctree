@@ -1,22 +1,23 @@
-// Small French formatters for the pane.
+// Small formatters for the pane, in the language set.
 
-/** `< 1 min`, `5 min`, `3 h`, `2 j`, `3 sem`, `4 mois`, `2 ans`: at most 7 columns. */
+import { t } from './i18n'
+
+/** `2h`, `1d`, `3w`, `4mo` (`2 h`, `1 j`, `3 sem`, `4 mois` in French): at most 7 columns. */
 export function relativeDate(seconds: number, nowMs: number): string {
   const elapsed = Math.max(0, Math.floor(nowMs / 1000) - seconds)
   const minutes = Math.floor(elapsed / 60)
   const hours = Math.floor(minutes / 60)
   const days = Math.floor(hours / 24)
+  const date = t().date
 
-  if (minutes < 1) return '< 1 min'
-  if (hours < 1) return `${minutes} min`
-  if (days < 1) return `${hours} h`
-  if (days < 7) return `${days} j`
-  if (days < 30) return `${Math.floor(days / 7)} sem`
-  if (days < 365) return `${Math.max(1, Math.floor(days / 30))} mois`
+  if (minutes < 1) return date.now
+  if (hours < 1) return date.minutes(minutes)
+  if (days < 1) return date.hours(hours)
+  if (days < 7) return date.days(days)
+  if (days < 30) return date.weeks(Math.floor(days / 7))
+  if (days < 365) return date.months(Math.max(1, Math.floor(days / 30)))
 
-  const years = Math.floor(days / 365)
-
-  return `${years} an${years > 1 ? 's' : ''}`
+  return date.years(Math.floor(days / 365))
 }
 
 /** `2026-10-26 14:03`, in UTC so it reads the same everywhere. */
@@ -35,10 +36,10 @@ export function shortHash(hash: string): string {
   return hash.slice(0, 7)
 }
 
-/** `+12 −3`, `+120`, `−40`, or `binaire`. */
+/** `+12 −3`, `+120`, `−40`, or `binary`. */
 export function counts(added: number | null, deleted: number | null): string {
   if (added === null || deleted === null) {
-    return 'binaire'
+    return t().binary
   }
 
   return [added > 0 ? `+${added}` : '', deleted > 0 ? `−${deleted}` : ''].filter(Boolean).join(' ')

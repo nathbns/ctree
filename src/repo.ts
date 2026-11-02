@@ -15,6 +15,7 @@ import {
   parseStatus,
   parseWorktrees,
 } from './git-parse'
+import { t } from './i18n'
 import type { Commit, FileChange, GitRunner, LogScope, RepoSnapshot, Snapshot, StatusEntry } from './types'
 
 const ALL: LogScope = { kind: 'all' }
@@ -45,7 +46,7 @@ export async function loadSnapshot(
     const repo = parseRepoInfo(info.stdout)
 
     if (!repo) {
-      return { kind: 'error', cwd, message: 'réponse inattendue de git rev-parse' }
+      return { kind: 'error', cwd, message: t().repo.unexpected }
     }
 
     const at = { cwd: repo.toplevel }
@@ -102,7 +103,7 @@ export async function loadCommits(
   const result = await git(Cmd.log(options), { cwd: toplevel })
 
   if (result.code !== 0) {
-    throw new Error(firstLine(result.stderr) || 'git log a échoué')
+    throw new Error(firstLine(result.stderr) || t().repo.logFailed)
   }
 
   const parsed = parseLog(result.stdout)
@@ -181,7 +182,7 @@ export async function loadCommitFiles(git: GitRunner, toplevel: string, commit: 
   ])
 
   if (statuses.code !== 0) {
-    throw new Error(firstLine(statuses.stderr) || 'git diff-tree a échoué')
+    throw new Error(firstLine(statuses.stderr) || t().repo.diffTreeFailed)
   }
 
   return joinChanges(parseNameStatus(statuses.stdout), counts.code === 0 ? parseNumstat(counts.stdout) : [])
@@ -195,7 +196,7 @@ export async function loadRangeFiles(git: GitRunner, toplevel: string, from: str
   ])
 
   if (statuses.code !== 0) {
-    throw new Error(firstLine(statuses.stderr) || 'git diff a échoué')
+    throw new Error(firstLine(statuses.stderr) || t().repo.diffFailed)
   }
 
   return joinChanges(parseNameStatus(statuses.stdout), counts.code === 0 ? parseNumstat(counts.stdout) : [])
@@ -305,5 +306,5 @@ function firstLine(text: string): string {
 function messageOf(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error)
 
-  return /ENOENT|not found|cannot start/i.test(text) ? 'git est introuvable sur cette machine' : text
+  return /ENOENT|not found|cannot start/i.test(text) ? t().repo.noGit : text
 }

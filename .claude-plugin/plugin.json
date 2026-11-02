@@ -1,7 +1,7 @@
 {
   "name": "ctree",
   "version": "0.4.0",
-  "description": "Graphe git du dépôt à côté de la conversation, qui suit les commandes git de Claude : garde-fou, journal et annulation, recherche, comparaison, stashs ; branche, tag et push avec confirmation",
+  "description": "The repository's git graph beside the conversation, following Claude's git commands: a guard on destructive ones, a journal that undoes them, search, compare, stashes; branch, tag and push once you confirm",
   "author": {
     "name": "nathbns"
   },
@@ -9,9 +9,16 @@
   "userConfig": {
     "guard": {
       "type": "boolean",
-      "title": "Garde-fou",
-      "description": "Demander avant que Claude lance une commande git qui perdrait du travail (reset --hard, checkout --, clean -f, stash drop, push --force, branch -D…)",
+      "title": "Guard",
+      "description": "Ask before Claude runs a git command that would lose work (reset --hard, checkout --, clean -f, stash drop, push --force, branch -D…)",
       "default": true
+    },
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "The pane's language: auto follows Claude Code's language setting, else the system locale (LANG); notes to Claude stay in English",
+      "options": ["auto", "en", "fr"],
+      "default": "auto"
     }
   }
 }

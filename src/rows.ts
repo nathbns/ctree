@@ -3,6 +3,7 @@
 
 import { colorPaths, DASHED_COLOR, HEAD_COLOR, STASH_COLOR, TAG_COLOR } from './colors'
 import { absoluteDate, counts, relativeDate, shortAuthor, shortHash, statusLetter } from './format'
+import { t } from './i18n'
 import { computeGraph, glyphOf, type Graph } from './lanes'
 import { labelsByCommit, labelText, refsByCommit, type Label } from './labels'
 import {
@@ -268,7 +269,7 @@ export function commitLine(view: View, commit: Commit, options: LineOptions): Se
   const chips = fitLabels(view.labels.get(commit.hash) ?? [], color, labelBudget(area))
   const chipsWidth = chips.reduce((sum, chip) => sum + textWidth(chip.text), 0)
   const messageRoom = Math.max(1, area - chipsWidth - (chipsWidth > 0 ? 1 : 0) - marks)
-  const subject = truncate(commit.subject || '(sans message)', messageRoom)
+  const subject = truncate(commit.subject || t().row.noMessage, messageRoom)
   const used = marks + textWidth(subject) + chipsWidth
   const message: Segment = options.isMatch
     ? { text: subject, color: 'warning', bold: true }
@@ -295,7 +296,7 @@ export function foldLine(view: View, fold: Fold, options: LineOptions): Segment[
   const area = Math.max(4, options.width - 2 - graph.length - 1 - sideWidth(options.columns))
   const names = [...new Set(fold.commits.map(commit => shortAuthor(commit.author)))]
   const who = names.length > 2 ? `${names.slice(0, 2).join(', ')}…` : names.join(', ')
-  const text = truncate(`▸ ${fold.commits.length} commits${who ? ` · ${who}` : ''}`, area)
+  const text = truncate(t().row.fold(fold.commits.length, who), area)
   const newest = fold.commits[0]
   const gap = ' '.repeat(GAP)
 
@@ -315,7 +316,7 @@ export function foldLine(view: View, fold: Fold, options: LineOptions): Segment[
 export function wipLine(view: View, count: number, options: LineOptions): Segment[] {
   const row = view.rowOf.get(WIP) ?? -1
   const graph = fitCells(rowCells(view, row, '◌'), options.graphWidth, 0)
-  const text = `Modifications non commitées (${count})`
+  const text = t().row.wip(count)
 
   return merge([
     pointer(options.isSelected),
@@ -343,7 +344,7 @@ export function fileLine(view: View, under: string, change: FileChange, options:
     { text: letter, color: statusColor(letter), bold: true },
     { text: ` ${name}` },
     { text: ' '.repeat(gap) },
-    ...(amount === 'binaire'
+    ...(change.added === null || change.deleted === null
       ? [{ text: amount, dim: true } as Segment]
       : [
           ...(added ? [{ text: added, color: added.startsWith('+') ? 'success' : 'error' }] : []),
@@ -376,20 +377,21 @@ export type HeaderExtras = {
 
 /** The line above the graph: repository, branch, how it stands against its upstream. */
 export function headerLine(snapshot: RepoSnapshot, width: number, extras: HeaderExtras = {}): Segment[] {
+  const m = t().row
   const parts: Segment[][] = [[{ text: snapshot.repo.name, bold: true }]]
   const head = snapshot.head
 
   if (head.kind === 'detached') {
-    parts.push([{ text: `HEAD détachée @ ${shortHash(head.hash)}`, color: 'warning', bold: true }])
+    parts.push([{ text: m.detachedAt(shortHash(head.hash)), color: 'warning', bold: true }])
   } else {
     parts.push([{ text: `⎇ ${head.branch}`, color: HEAD_COLOR, bold: true }])
 
     const branch = snapshot.refs.find(ref => ref.kind === 'branch' && ref.name === head.branch)
 
     if (head.hash === null) {
-      parts.push([{ text: 'aucun commit', dim: true }])
+      parts.push([{ text: m.noCommit, dim: true }])
     } else if (branch?.upstream && branch.isUpstreamGone) {
-      parts.push([{ text: `${branch.upstream} supprimée`, color: 'warning' }])
+      parts.push([{ text: m.upstreamGone(branch.upstream), color: 'warning' }])
     } else if (branch?.upstream) {
       const [ahead, behind] = branch.track ?? [0, 0]
       const sync = ahead === 0 && behind === 0 ? '✓' : [ahead ? `↑${ahead}` : '', behind ? `↓${behind}` : ''].filter(Boolean).join(' ')
@@ -399,15 +401,14 @@ export function headerLine(snapshot: RepoSnapshot, width: number, extras: Header
   }
 
   if (snapshot.scope.kind === 'focus') {
-    parts.push([{ text: `◎ ${snapshot.scope.label}${snapshot.scope.isFirstParent ? ' · 1er parent' : ''}`, color: 'suggestion', bold: true }])
+    parts.push([{ text: `◎ ${snapshot.scope.label}${snapshot.scope.isFirstParent ? m.firstParent : ''}`, color: 'suggestion', bold: true }])
   }
 
   if (extras.search) {
     const { query, index, count } = extras.search
+    const where = count === 0 ? m.none : index >= 0 ? `${index + 1}/${count}` : `${count}`
 
-    const where = count === 0 ? 'aucun' : index >= 0 ? `${index + 1}/${count}` : `${count}`
-
-    parts.push([{ text: `⌕ « ${truncate(query, 24)} » ${where}`, color: 'warning', bold: true }])
+    parts.push([{ text: m.search(truncate(query, 24), where), color: 'warning', bold: true }])
   }
 
   if (extras.mark) {
@@ -415,15 +416,15 @@ export function headerLine(snapshot: RepoSnapshot, width: number, extras: Header
   }
 
   if (extras.isOverview) {
-    parts.push([{ text: '▤ vue d’ensemble', color: 'suggestion' }])
+    parts.push([{ text: m.overview, color: 'suggestion' }])
   }
 
   if (snapshot.repo.isLinkedWorktree) {
-    parts.push([{ text: 'worktree secondaire', color: 'warning' }])
+    parts.push([{ text: m.linkedWorktree, color: 'warning' }])
   }
 
   if (snapshot.sessionCommits.length > 0) {
-    parts.push([{ text: `✦ ${snapshot.sessionCommits.length} cette session`, color: 'claude' }])
+    parts.push([{ text: m.session(snapshot.sessionCommits.length), color: 'claude' }])
   }
 
   return fitParts(parts, width - 1)
@@ -431,13 +432,9 @@ export function headerLine(snapshot: RepoSnapshot, width: number, extras: Header
 
 /** The question `e` puts in the prompt for a commit. */
 export function explainCommitPrompt(commit: Commit): string {
-  const kind = commit.isMerge || commit.parents.length > 1 ? 'le merge' : 'le commit'
+  const isMerge = commit.isMerge === true || commit.parents.length > 1
 
-  return (
-    `Explique ${kind} ${shortHash(commit.hash)} « ${commit.subject} » ` +
-    `(${commit.author}, ${absoluteDate(commit.time)} UTC) : ce qu'il change, pourquoi, ` +
-    `et ce qu'il faut surveiller. Lis-le avec git show ${shortHash(commit.hash)}.`
-  )
+  return t().ask.commit(isMerge, shortHash(commit.hash), commit.subject, commit.author, absoluteDate(commit.time))
 }
 
 /** The question `e` puts in the prompt for a folded run. */
@@ -447,55 +444,36 @@ export function explainRangePrompt(fold: Fold): string {
 
   if (!newest || !oldest) return ''
 
-  return (
-    `Explique ces ${fold.commits.length} commits, de ${shortHash(oldest.hash)} « ${oldest.subject} » ` +
-    `à ${shortHash(newest.hash)} « ${newest.subject} » : ce qu'ils changent ensemble et pourquoi. ` +
-    `Lis-les avec git log -p ${shortHash(oldest.hash)}~1..${shortHash(newest.hash)}.`
-  )
+  return t().ask.range(fold.commits.length, shortHash(oldest.hash), oldest.subject, shortHash(newest.hash), newest.subject)
 }
 
 /** The question `e` puts in the prompt for a stash. */
 export function explainStashPrompt(commit: Commit): string {
   const short = shortHash(commit.hash)
 
-  return (
-    `Explique le stash ${commit.stash ?? short} (${short}) « ${commit.subject} » : ce qu'il contient, ` +
-    `et s'il vaut la peine de l'appliquer. Lis-le avec git stash show -p ${short}.`
-  )
+  return t().ask.stash(commit.stash ?? short, short, commit.subject)
 }
 
 /** The question `e` puts in the prompt for a comparison, or for one of its files. */
 export function explainComparePrompt(from: Commit, to: Commit | null, path?: string): string {
+  const ask = t().ask
   const a = shortHash(from.hash)
   const b = to ? shortHash(to.hash) : null
   const diff = `git diff ${a}${b ? ` ${b}` : ''}${path ? ` -- ${path}` : ''}`
 
   if (!to || !b) {
-    return path
-      ? `Explique ce qui change dans ${path} entre ${a} « ${from.subject} » et mes modifications non commitées (${diff}).`
-      : `Compare mes modifications non commitées avec ${a} « ${from.subject} » : ce qui a changé depuis et pourquoi. Lis-le avec ${diff}.`
+    return path ? ask.compareWipFile(path, a, from.subject, diff) : ask.compareWip(a, from.subject, diff)
   }
 
-  return path
-    ? `Explique ce qui change dans ${path} de ${a} « ${from.subject} » à ${b} « ${to.subject} » : quoi et pourquoi. Lis-le avec ${diff}.`
-    : (
-      `Compare ${a} « ${from.subject} » et ${b} « ${to.subject} » : ce qui a changé de l'un à l'autre, pourquoi, ` +
-      `et ce qu'il faut surveiller. Lis les commits avec git log --oneline ${a}...${b} et les changements avec git diff --stat ${a} ${b}.`
-    )
+  return path ? ask.compareFile(path, a, from.subject, b, to.subject, diff) : ask.compare(a, from.subject, b, to.subject)
 }
 
 export function explainFilePrompt(commit: Commit, path: string): string {
-  return (
-    `Explique les changements de ${path} dans le commit ${shortHash(commit.hash)} ` +
-    `« ${commit.subject} » : ce qu'ils font et pourquoi. ` +
-    `Lis-les avec git show ${shortHash(commit.hash)} -- ${path}.`
-  )
+  return t().ask.file(path, shortHash(commit.hash), commit.subject)
 }
 
 export function explainWipPrompt(count: number, path?: string): string {
-  return path
-    ? `Explique mes modifications non commitées de ${path} (git diff HEAD -- ${path}) : ce qu'elles changent et s'il manque quelque chose.`
-    : `Explique mes ${count} modifications non commitées (git status, git diff HEAD) : ce qu'elles changent et s'il manque quelque chose avant de committer.`
+  return path ? t().ask.wipFile(path) : t().ask.wip(count)
 }
 
 function sideSegments(commit: Commit, options: LineOptions): Segment[] {

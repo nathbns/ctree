@@ -9,6 +9,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { isAllowedWrite } from '../src/git-actions'
 import { GIT_ENV, isReadOnly, READ_FLAGS } from '../src/git-commands'
 import { gitCalls, riskOf } from '../src/guard'
+import { NOTES, resolveLanguage, setLanguage, t } from '../src/i18n'
 import type { RefState } from '../src/journal'
 import type { GitOptions } from '../src/types'
 import { createController, type Controller, type Host } from './controller'
@@ -60,14 +61,14 @@ function hostOf($: EngineInterface, siteId: () => string): Host {
   return {
     git: async (args, options) => {
       if (!isReadOnly(args)) {
-        throw new Error(`ctree ne lance que des lectures ici : git ${args[0] ?? ''} refusé`)
+        throw new Error(t().pane.readOnly(args[0] ?? ''))
       }
 
       return run(args, options)
     },
     write: async (args, options) => {
       if (!isAllowedWrite(args)) {
-        throw new Error(`ctree refuse cette écriture : git ${args.join(' ')}`)
+        throw new Error(t().pane.refused(args.join(' ')))
       }
 
       return run(args, options)
@@ -135,12 +136,23 @@ export const register: Register = (on, options) => {
   let ctl: Controller | null = null
   // The guard asks a person: on unless turned off, and only where someone can answer.
   const isGuardOn = options?.guard !== false
+  // en, fr, or auto: Claude Code's language setting, else the locale.
+  const languageSetting = typeof options?.language === 'string' ? options.language : 'auto'
   let isGuarded = false
 
   on('session.start', async ($, e, next) => {
+    const [claude, LC_ALL, LC_MESSAGES, LANG] = await Promise.all([
+      languageSetting === 'auto' ? $.settings.read({ key: 'language' }).catch(() => undefined) : undefined,
+      $.env.get('LC_ALL').catch(() => undefined),
+      $.env.get('LC_MESSAGES').catch(() => undefined),
+      $.env.get('LANG').catch(() => undefined),
+    ])
+
+    setLanguage(resolveLanguage(languageSetting, typeof claude === 'string' ? claude : undefined, { LC_ALL, LC_MESSAGES, LANG }))
+
     await $.command.register({
       name: 'ctree',
-      description: 'Graphe git du dépôt dans un panneau à côté de la conversation',
+      description: t().pane.description,
       immediate: true,
     })
 
@@ -158,7 +170,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'ctree' }, async ($, e) => {
     if (!ctl) {
-      return { text: 'ctree : la session démarre encore, réessaie dans un instant.' }
+      return { text: t().pane.starting }
     }
 
     wanted.columns = Math.max(24, Math.floor(e.presentation.columns * DOCK_SHARE))
@@ -166,14 +178,14 @@ export const register: Register = (on, options) => {
     if (ctl.placement === 'band') {
       ctl.opened()
 
-      return { text: 'ctree s’affiche au-dessus du prompt, sur toute la largeur. Ctrl+X Tab (ou un clic) pour le piloter, z pour le remettre en panneau.' }
+      return { text: t().pane.inBand }
     }
 
     const opened = await $.ui.open(paneArgs(true))
 
     ctl.opened()
 
-    return opened.isPlaced ? {} : { text: `ctree : ${opened.reason}` }
+    return opened.isPlaced ? {} : { text: t().pane.notPlaced(opened.reason) }
   })
 
   // Placed in the band (z), ctree draws above the prompt, the terminal's whole width.
@@ -201,7 +213,7 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Code } = table
 
     if (!ctl) {
-      return <Text dimColor>ctree démarre…</Text>
+      return <Text dimColor>{t().pane.loading}</Text>
     }
 
     ctl.shown()
@@ -224,11 +236,11 @@ export const register: Register = (on, options) => {
       if (answer === 'back') {
         void $.ui.open(paneArgs(true)).catch(() => undefined)
 
-        return { deny: 'retour à la liste' }
+        return { deny: t().pane.back }
       }
 
       if (answer === 'keep') {
-        return { deny: 'le panneau reste ouvert' }
+        return { deny: t().pane.kept }
       }
     }
 
@@ -317,8 +329,6 @@ export const register: Register = (on, options) => {
     const command = 'command' in e && typeof e.command === 'string' ? e.command : ''
     const isRisky = isGuarded && gitCalls(command).some(call => riskOf(call) !== null)
 
-    return isRisky
-      ? { deny: 'ctree n’a pas pu vérifier ce que cette commande git perdrait : elle n’a pas été lancée. Demande à la personne avant de réessayer.' }
-      : next(e)
+    return isRisky ? { deny: NOTES.unchecked } : next(e)
   })
 }

@@ -2,6 +2,7 @@
 // unfolded ones), the window of it the pane shows, and what a move of the
 // focus ring means for the selection.
 
+import { t } from './i18n'
 import type { Fold } from './overview'
 import { WIP } from './rows'
 import type { Commit, FileChange } from './types'
@@ -40,17 +41,18 @@ export function flatten(
 
   const filesOf = (under: string) => {
     const open = unfolded.get(under)
+    const m = t().list
 
     if (!open) {
       return
     }
 
     if (open.state === 'loading') {
-      items.push({ kind: 'note', key: `n:${under}`, under, text: 'chargement…' })
+      items.push({ kind: 'note', key: `n:${under}`, under, text: m.loading })
     } else if (open.state === 'error') {
-      items.push({ kind: 'note', key: `n:${under}`, under, text: `erreur : ${open.message}` })
+      items.push({ kind: 'note', key: `n:${under}`, under, text: m.error(open.message) })
     } else if (open.files.length === 0) {
-      items.push({ kind: 'note', key: `n:${under}`, under, text: 'aucun fichier modifié' })
+      items.push({ kind: 'note', key: `n:${under}`, under, text: m.noFiles })
     } else {
       open.files.forEach((change, index) => {
         items.push({ kind: 'file', key: fileKey(under, index), under, index, change })
@@ -75,7 +77,7 @@ export function flatten(
   if (more === 'loading') {
     const last = commits[commits.length - 1]
 
-    items.push({ kind: 'note', key: 'n:more', under: last?.hash ?? WIP, text: 'chargement des commits suivants…' })
+    items.push({ kind: 'note', key: 'n:more', under: last?.hash ?? WIP, text: t().list.loadingMore })
   }
 
   return items

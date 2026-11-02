@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { createController, type Host, LET_IT_RUN, REFUSE } from '../hooks/controller'
+import { createController, type Host } from '../hooks/controller'
 import { isAllowedWrite } from '../src/git-actions'
 import type { JournalEntry, RefState } from '../src/journal'
-import { type Answer, COMMITS, demoGit, h, linearSnapshot, logOf, nth, type Script } from './fixtures'
+import { type Answer, COMMITS, demoGit, h, inBoth, linearSnapshot, logOf, nth, type Script } from './fixtures'
 
 /** The demo's commits a search finds: Calcul des lanes, then Parsing de git log. */
 const COMMITS_FOUND = [COMMITS[3], COMMITS[6]]
@@ -22,7 +22,8 @@ function fakeHost(script: Script = () => undefined) {
   const writes: string[][] = []
   const notes: string[] = []
   const asked: string[] = []
-  const git = { refusal: null as string | null, answer: LET_IT_RUN as string | null }
+  // The guard's question is answered by its first option (let it run), its second (refuse), or dismissed.
+  const git = { refusal: null as string | null, answer: 'run' as 'run' | 'refuse' | null }
   // The repository's refs, which the undo writes move for real.
   const repo: RefState = {
     refs: { 'refs/heads/main': h('3'), 'refs/heads/feature/ui': h('1'), 'refs/remotes/origin/main': h('3') },
@@ -78,10 +79,10 @@ function fakeHost(script: Script = () => undefined) {
 
       return { code: 0, stdout: '', stderr: '' }
     },
-    ask: async question => {
+    ask: async (question, options) => {
       asked.push(question)
 
-      return git.answer
+      return git.answer === null ? null : options[git.answer === 'run' ? 0 : 1] ?? null
     },
     store: {
       get: async key => stored.get(key),
@@ -187,13 +188,13 @@ describe('Escape', () => {
     expect(ctl.escape()).toBe('close')
   })
 
-  test('right after e it hands the keys back to the prompt once, then closes', async () => {
+  inBoth('right after e it hands the keys back to the prompt once, then closes', async say => {
     const { ctl, filled } = await loaded()
 
     await ctl.explain()
 
-    expect(filled[0]).toContain('3333333')
-    expect(ctl.model.notice).toContain('Question prête')
+    expect(filled[0]).toContain(say('Explain the merge 3333333 "Merge branch \'feature/lanes\'"', 'Explique le merge 3333333 « Merge branch \'feature/lanes\' »'))
+    expect(ctl.model.notice).toContain(say('Question ready', 'Question prête'))
     expect(ctl.escape()).toBe('keep')
     expect(ctl.model.notice).toBeNull()
     expect(ctl.escape()).toBe('close')
@@ -240,7 +241,7 @@ describe('the focus ring', () => {
 })
 
 describe('changes wait for their confirmation', () => {
-  test('c on a branch: nothing runs until y, then git switch, a note for Claude, a reload', async () => {
+  inBoth('c on a branch: nothing runs until y, then git switch, a note for Claude, a reload', async say => {
     const { ctl, writes, notes, focused } = await loaded()
 
     ctl.ringMoved(`c:${h('1')}`)
@@ -253,9 +254,10 @@ describe('changes wait for their confirmation', () => {
     await ctl.confirm()
 
     expect(writes).toEqual([['switch', 'feature/ui']])
-    expect(notes[0]).toContain('feature/ui')
+    // Claude's note is in English whatever the language.
+    expect(notes[0]).toBe('[ctree] Through the pane, the person switched to branch feature/ui (git switch feature/ui).')
     expect(ctl.model.action).toBeNull()
-    expect(ctl.model.notice).toBe('✓ Sur feature/ui')
+    expect(ctl.model.notice).toBe(say('✓ On feature/ui', '✓ Sur feature/ui'))
   })
 
   test('n, or Escape, drops the change and runs nothing', async () => {
@@ -285,16 +287,16 @@ describe('changes wait for their confirmation', () => {
     expect(ctl.model.unfolded.size).toBe(0)
   })
 
-  test('on HEAD’s own commit there is nothing to switch to', async () => {
+  inBoth('on HEAD’s own commit there is nothing to switch to', async say => {
     const { ctl } = await loaded()
 
     ctl.beginSwitch()
 
     expect(ctl.model.action).toBeNull()
-    expect(ctl.model.notice).toContain('déjà')
+    expect(ctl.model.notice).toBe(say('HEAD is already on this commit', 'HEAD est déjà sur ce commit'))
   })
 
-  test('t: the next version is offered, a taken name refused, then the tag made', async () => {
+  inBoth('t: the next version is offered, a taken name refused, then the tag made', async say => {
     const { ctl, writes } = await loaded()
 
     ctl.beginTag()
@@ -304,7 +306,7 @@ describe('changes wait for their confirmation', () => {
     ctl.setTagField('name', 'v0.2.0')
     ctl.submitTag()
 
-    expect(ctl.model.action).toMatchObject({ kind: 'tag-form', error: 'le tag v0.2.0 existe déjà' })
+    expect(ctl.model.action).toMatchObject({ kind: 'tag-form', error: say('tag v0.2.0 already exists', 'le tag v0.2.0 existe déjà') })
 
     ctl.setTagField('name', 'v0.3.0')
     ctl.setTagField('message', 'Version 0.3')
@@ -329,7 +331,7 @@ describe('changes wait for their confirmation', () => {
     expect(writes).toEqual([['push', '--follow-tags', 'origin', 'main']])
   })
 
-  test('a refusal from git stays on screen, its hints left out, until dismissed', async () => {
+  inBoth('a refusal from git stays on screen, its hints left out, until dismissed', async say => {
     const { ctl, git } = await loaded()
 
     ctl.ringMoved(`c:${h('1')}`)
@@ -339,7 +341,7 @@ describe('changes wait for their confirmation', () => {
 
     expect(ctl.model.action).toEqual({
       kind: 'info',
-      title: '✗ ⎇ Passer sur feature/ui',
+      title: say('✗ ⎇ Switch to feature/ui', '✗ ⎇ Passer sur feature/ui'),
       lines: ['Your local changes would be overwritten by checkout'],
       isError: true,
     })
@@ -393,7 +395,7 @@ describe('seeing the whole graph', () => {
     expect(ctl.model.selected).toBe(`c:${nth(1)}`)
   })
 
-  test('e on a fold asks about the whole run', async () => {
+  inBoth('e on a fold asks about the whole run', async say => {
     const { ctl, filled } = await loaded(linearGit)
 
     ctl.toggleOverview()
@@ -401,7 +403,7 @@ describe('seeing the whole graph', () => {
     ctl.ringMoved(`z:FOLD:${nth(1)}`)
     await ctl.explain()
 
-    expect(filled[0]).toContain('Explique ces 248 commits')
+    expect(filled[0]).toContain(say('Explain these 248 commits', 'Explique ces 248 commits'))
   })
 
   test('f: the selected branch, then its first parents alone, then every branch again', async () => {
@@ -447,16 +449,21 @@ describe('the guard on Claude’s git commands', () => {
     expect(asked).toEqual([])
   })
 
-  test('reset --hard asks, saying what would go; refused, Claude reads why', async () => {
+  inBoth('reset --hard asks, saying what would go; refused, Claude reads why, in English', async say => {
     const { ctl, asked, git } = await loaded()
 
-    git.answer = REFUSE
+    git.answer = 'refuse'
 
     const verdict = await ctl.guard('git reset --hard HEAD~1')
 
-    expect(asked[0]).toContain('Claude veut lancer « git reset --hard HEAD~1 »')
-    expect(asked[0]).toContain('1 fichier modifié perdu : a.txt')
-    expect(verdict.deny).toContain('la personne a refusé « git reset --hard HEAD~1 »')
+    expect(asked[0]).toBe(say(
+      'Claude wants to run "git reset --hard HEAD~1". 1 changed file lost: a.txt. Let it run?',
+      'Claude veut lancer « git reset --hard HEAD~1 ». 1 fichier modifié perdu : a.txt. Laisser passer ?',
+    ))
+    expect(verdict.deny).toBe(
+      'ctree: the person refused "git reset --hard HEAD~1", which would have lost: 1 changed file lost: a.txt. ' +
+        'Do not run this command again as is: ask them how to proceed.',
+    )
     expect(ctl.model.action).toBeNull()
   })
 
@@ -477,7 +484,7 @@ describe('the guard on Claude’s git commands', () => {
 })
 
 describe('the journal and its undo', () => {
-  test('Claude’s commit goes in the journal; u undoes it softly once confirmed, and Claude is told', async () => {
+  inBoth('Claude’s commit goes in the journal; u undoes it softly once confirmed, and Claude is told in English', async say => {
     const { ctl, repo, writes, notes } = await loaded()
     const before = await ctl.watch()
 
@@ -490,14 +497,20 @@ describe('the journal and its undo', () => {
 
     await ctl.beginUndo()
 
-    expect(ctl.model.action).toMatchObject({ kind: 'confirm', action: { args: ['reset', '--soft', h('3')] } })
+    expect(ctl.model.action).toMatchObject({
+      kind: 'confirm',
+      action: { args: ['reset', '--soft', h('3')], title: say('⟲ Undo "git commit -am "wip"" (turn 4)', '⟲ Annuler « git commit -am "wip" » (tour 4)') },
+    })
     expect(writes).toEqual([])
 
     await ctl.confirm()
 
     expect(repo.refs['refs/heads/main']).toBe(h('3'))
     expect(ctl.model.journal[0]?.isUndone).toBe(true)
-    expect(notes.at(-1)).toContain('la personne a annulé ta commande « git commit -am "wip" » (tour 4)')
+    expect(notes.at(-1)).toBe(
+      '[ctree] Through the pane, the person undid your command "git commit -am "wip"" (turn 4): main 3333333 → 9999999. ' +
+        'The repository is back to how it was before that command.',
+    )
   })
 
   test('a reset --hard with saved changes offers both: the branch alone, or the files too', async () => {
@@ -522,7 +535,7 @@ describe('the journal and its undo', () => {
     ])
   })
 
-  test('a command that changed nothing is not journaled; with nothing to undo, u says so', async () => {
+  inBoth('a command that changed nothing is not journaled; with nothing to undo, u says so', async say => {
     const { ctl } = await loaded()
     const before = await ctl.watch()
 
@@ -532,7 +545,7 @@ describe('the journal and its undo', () => {
 
     await ctl.beginUndo()
 
-    expect(ctl.model.notice).toContain('Rien à annuler')
+    expect(ctl.model.notice).toContain(say('Nothing to undo', 'Rien à annuler'))
   })
 })
 
@@ -645,11 +658,11 @@ describe('comparing two commits', () => {
     expect(ctl.model.mark).toBe(h('1'))
   })
 
-  test('with no mark, d compares with HEAD; on HEAD itself it says how to mark', async () => {
+  inBoth('with no mark, d compares with HEAD; on HEAD itself it says how to mark', async say => {
     const { ctl } = await loaded(apart)
 
     await ctl.beginCompare()
-    expect(ctl.model.notice).toContain('Marque un commit avec m')
+    expect(ctl.model.notice).toBe(say('Mark a commit with m, then d on another to compare them', 'Marque un commit avec m, puis d sur un autre pour les comparer'))
 
     ctl.ringMoved(`c:${h('1')}`)
     await ctl.beginCompare()
@@ -698,7 +711,7 @@ describe('searching', () => {
     expect(ctl.escape()).toBe('close')
   })
 
-  test('a result past the pages loaded is loaded up to; one off the history drawn is shown in focus', async () => {
+  inBoth('a result past the pages loaded is loaded up to; one off the history drawn is shown in focus', async say => {
     const far = { ...COMMITS_FOUND[0]!, hash: h('e'), parents: [] }
     const script: Script = args => {
       if (args[0] === 'log' && args.includes(h('e'))) return { exitCode: 0, stdout: logOf([far]) }
@@ -719,7 +732,7 @@ describe('searching', () => {
     await ctl.openHit(h('e'))
     expect(ctl.model.scope).toEqual({ kind: 'focus', ref: h('e'), label: 'eeeeeee', isFirstParent: false })
     expect(ctl.model.selected).toBe(`c:${h('e')}`)
-    expect(ctl.model.notice).toContain('montré en focus')
+    expect(ctl.model.notice).toContain(say('shown in focus', 'montré en focus'))
   })
 })
 
@@ -745,7 +758,7 @@ describe('copying, HEAD, stashes and the help', () => {
     expect(focused.at(-1)).toBe(`c:${nth(0)}`)
   })
 
-  test('a stash is in the graph: Enter lists its files, c says what it is, a applies it once confirmed', async () => {
+  inBoth('a stash is in the graph: Enter lists its files, c says what it is, a applies it once confirmed', async say => {
     const stash = [h('a'), `${h('3')} ${h('b')}`, 'Nathan Test', 'n@e.st', '1793000000', 'stash@{0}', 'On main: essai'].join('\x1f')
     const { ctl, writes, notes } = await loaded(args => (args[0] === 'stash' ? { exitCode: 0, stdout: `${stash}\0` } : undefined))
     const row = ctl.items().find(item => item.key === `c:${h('a')}`)
@@ -757,7 +770,7 @@ describe('copying, HEAD, stashes and the help', () => {
 
     ctl.beginSwitch()
     expect(ctl.model.action).toBeNull()
-    expect(ctl.model.notice).toContain('Un stash')
+    expect(ctl.model.notice).toContain(say('A stash', 'Un stash'))
 
     ctl.beginApplyStash()
 
@@ -767,15 +780,15 @@ describe('copying, HEAD, stashes and the help', () => {
 
     await ctl.confirm()
     expect(writes).toEqual([['stash', 'apply', h('a')]])
-    expect(notes[0]).toContain('stash@{0} « On main: essai »')
+    expect(notes[0]).toContain('applied the stash stash@{0} "On main: essai"')
   })
 
-  test('a with no stash selected says how', async () => {
+  inBoth('a with no stash selected says how', async say => {
     const { ctl } = await loaded()
 
     ctl.beginApplyStash()
     expect(ctl.model.action).toBeNull()
-    expect(ctl.model.notice).toContain('Sélectionne un stash')
+    expect(ctl.model.notice).toBe(say('Select a stash (≡) to apply it', 'Sélectionne un stash (≡) pour l’appliquer'))
   })
 
   test('h shows the help, q comes back', async () => {

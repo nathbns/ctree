@@ -16,7 +16,8 @@ import {
 } from '../src/git-actions'
 import { displayCommand, isSafeRefName } from '../src/git-actions'
 import { headRef, PAGE_SIZE, repoInfo, sshCommand } from '../src/git-commands'
-import { consequences, gitCalls, losesChanges, readStatus, riskOf } from '../src/guard'
+import { consequences, gitCalls, type Loss, losesChanges, lossText, readStatus, riskOf } from '../src/guard'
+import { messages, NOTES, t } from '../src/i18n'
 import { appended, describeMoves, journalEntry, type JournalEntry, readRefState, type RefState, undoPlan } from '../src/journal'
 import { loadSessionData, prDescriptionPrompt, type SessionData } from '../src/session'
 import {
@@ -222,10 +223,6 @@ const SLOW_READ_MS = 1500
 const PUSH_TIMEOUT_MS = 120_000
 const WRITE_TIMEOUT_MS = 30_000
 
-/** The two answers the guard offers. */
-export const LET_IT_RUN = 'Laisser passer'
-export const REFUSE = 'Refuser'
-
 const shortCommand = (command: string) => (command.length > 120 ? `${command.slice(0, 119)}…` : command)
 
 export type Controller = ReturnType<typeof createController>
@@ -350,7 +347,7 @@ export function createController(host: Host) {
 
         if (elapsed > SLOW_READ_MS && !isSlowSaid && snapshot.kind === 'repo') {
           isSlowSaid = true
-          showNotice(`Dépôt lent à lire (${(elapsed / 1000).toFixed(1).replace('.', ',')} s) · git commit-graph write --reachable l’accélère souvent`, false)
+          showNotice(t().notice.slow(t().date.seconds(elapsed / 1000)), false)
         }
       }
     } catch (error) {
@@ -587,7 +584,7 @@ export function createController(host: Host) {
 
   /** The selected commit when it is a stash, and the notice for the keys a stash has no use for. */
   const isStashSelected = () => selectedCommit()?.stash !== undefined
-  const stashNotice = () => showNotice('Un stash : ⏎ ses fichiers, a pour l’appliquer, e pour l’expliquer', false)
+  const stashNotice = () => showNotice(t().notice.stash, false)
 
   /**
    * Selects a commit wherever it is: in a fold (opened), past the pages
@@ -611,7 +608,7 @@ export function createController(host: Host) {
     }
 
     if (!isLoaded()) {
-      if (isRetry) return showNotice('Commit introuvable dans l’historique', false)
+      if (isRetry) return showNotice(t().notice.notFound, false)
 
       const scope: LogScope = model.scope.kind === 'focus' ? { kind: 'all' } : { kind: 'focus', ref: needed, label: needed.slice(0, 7), isFirstParent: false }
 
@@ -621,7 +618,7 @@ export function createController(host: Host) {
       await reveal(hash, true)
 
       if (scope.kind === 'focus') {
-        showNotice('Commit loin dans l’historique : montré en focus · f pour revenir à toutes les branches', false)
+        showNotice(t().notice.far, false)
       }
 
       return
@@ -739,7 +736,7 @@ export function createController(host: Host) {
         // Our own close raises no hook of ours: the view stays open, in the band.
         await host.close().catch(() => undefined)
         isOpen = true
-        showNotice('Pleine largeur au-dessus du prompt · Ctrl+X Tab (ou un clic) pour piloter · z pour revenir au panneau', false)
+        showNotice(t().notice.band, false)
       } else {
         isOpen = true
         await host.open(true).catch(() => undefined)
@@ -917,7 +914,7 @@ export function createController(host: Host) {
         const now = await readRefState(host.git, toplevel)
         let start = await host.start.get()
 
-        if (!now) throw new Error('pas de dépôt git ici')
+        if (!now) throw new Error(t().session.noRepo)
 
         if (!start) {
           start = { ...now, at: await host.now() }
@@ -964,37 +961,36 @@ export function createController(host: Host) {
       const toplevel = await toplevelOf()
       const [status, symbolic] = await Promise.all([readStatus(host.git, toplevel), host.git(headRef(), { cwd: toplevel })])
       const branch = symbolic.code === 0 ? symbolic.stdout.trim().replace(/^refs\/heads\//, '') || null : null
-      const lines: string[] = []
+      const losses: Loss[] = []
 
       for (const { call, risk } of risky) {
-        lines.push(
+        losses.push(
           ...(call.isElsewhere
-            ? [`dans un autre dépôt (${call.text}) : ce qu’elle perd n’a pas été vérifié`]
-            : await consequences(host.git, risk, { toplevel, status, branch }).catch(() => [`${call.text} : ce qu’elle perd n’a pas pu être vérifié`])),
+            ? [{ kind: 'elsewhere' as const, command: call.text }]
+            : await consequences(host.git, risk, { toplevel, status, branch }).catch(() => [{ kind: 'unchecked' as const, command: call.text }])),
         )
       }
 
-      if (lines.length === 0) return {}
+      if (losses.length === 0) return {}
 
+      const said = t().guard
+      const lines = losses.map(loss => lossText(loss))
       const shown = shortCommand(risky.map(one => one.call.text).join(' ; '))
       const held = model.action
-      const question = `Claude veut lancer « ${shown} ». ${lines.join(' ; ')}. Laisser passer ?`
+      const question = said.question(shown, lines)
       let answer: string | null = null
 
       set({ action: { kind: 'guard', command: shown, lines } })
 
       try {
-        answer = await host.ask(question.length > 600 ? `${question.slice(0, 590)}… Laisser passer ?` : question, [LET_IT_RUN, REFUSE])
+        answer = await host.ask(question.length > 600 ? said.cut(question) : question, [said.letItRun, said.refuse])
       } finally {
         set({ action: held })
       }
 
-      if (answer !== LET_IT_RUN) {
-        return {
-          deny:
-            `ctree : la personne a refusé « ${shown} », qui aurait perdu : ${lines.join(' ; ')}. ` +
-            'Ne relance pas cette commande telle quelle : demande-lui comment procéder.',
-        }
+      if (answer !== said.letItRun) {
+        // Claude reads it in English, whatever the person's language.
+        return { deny: NOTES.refused(shown, losses.map(loss => lossText(loss, messages('en')))) }
       }
 
       const tracked = status.filter(entry => entry.code !== '?')
@@ -1042,8 +1038,10 @@ export function createController(host: Host) {
     async beginUndo(id?: string) {
       const entry = id ? model.journal.find(one => one.id === id) : model.journal.find(one => !one.isUndone)
 
-      if (!entry) return showNotice('Rien à annuler : Claude n’a encore rien changé avec git', false)
-      if (entry.isUndone) return showNotice('Déjà annulé', false)
+      const said = t().undo
+
+      if (!entry) return showNotice(said.nothing, false)
+      if (entry.isUndone) return showNotice(said.already, false)
 
       const now = await readRefState(host.git, await toplevelOf())
 
@@ -1051,17 +1049,15 @@ export function createController(host: Host) {
 
       const plan = undoPlan(entry, now)
       const command = shortCommand(entry.command)
-      const title = `⟲ Annuler « ${command} » (tour ${entry.turn})`
-      const what = describeMoves(entry).join(', ')
-      const note = (extra: string) =>
-        `[ctree] Via le panneau, la personne a annulé ta commande « ${command} » (tour ${entry.turn}) : ${what}${extra}. ` +
-        'Le dépôt est revenu à l’état d’avant cette commande.'
-      const base = { kind: 'undo' as const, title, confirm: 'défaire', undoes: entry.id }
+      const title = said.title(command, entry.turn)
+      // Claude reads what was undone in English.
+      const what = describeMoves(entry, messages('en')).join(', ')
+      const base = { kind: 'undo' as const, title, confirm: said.confirm, undoes: entry.id }
       const actions: Action[] = []
       const [first, ...rest] = plan.steps
 
       if (first) {
-        actions.push({ ...base, args: first, then: rest, details: plan.notes, success: '✓ Annulé', note: note('') })
+        actions.push({ ...base, args: first, then: rest, details: plan.notes, success: said.done, note: NOTES.undone(command, entry.turn, what, false) })
       }
 
       if (plan.restore) {
@@ -1069,19 +1065,19 @@ export function createController(host: Host) {
 
         actions.push({
           ...base,
-          title: first ? `${title}, fichiers compris` : `⟲ Récupérer les fichiers jetés par « ${command} »`,
+          title: first ? said.withFiles(title) : said.filesOnly(command),
           args: head ?? plan.restore,
           then: tail,
-          details: [`récupère ${entry.savedFiles ?? 0} fichier(s) modifié(s) jeté(s) (git stash apply)`, ...plan.notes],
-          success: '✓ Annulé, fichiers récupérés',
-          note: note(', et les fichiers modifiés jetés sont revenus'),
+          details: [said.filesDetail(entry.savedFiles ?? 0), ...plan.notes],
+          success: said.doneWithFiles,
+          note: NOTES.undone(command, entry.turn, what, true),
         })
       }
 
       const [only] = actions
 
       if (!only) {
-        return openBand({ kind: 'info', title, lines: plan.notes.length ? plan.notes : ['plus rien à remettre'], isError: false }, 'act-n')
+        return openBand({ kind: 'info', title, lines: plan.notes.length ? plan.notes : [said.nothingLeft], isError: false }, 'act-n')
       }
 
       openBand(actions.length === 1 ? { kind: 'confirm', action: only } : { kind: 'choose', title, actions }, 'act-n')
@@ -1116,12 +1112,7 @@ export function createController(host: Host) {
 
       const isFilled = await host.fill(text)
 
-      showNotice(
-        isFilled
-          ? 'Question prête dans le prompt · Échap pour y aller, le panneau reste ouvert'
-          : 'Le prompt n’a pas pu être rempli ici',
-        isFilled,
-      )
+      showNotice(isFilled ? t().notice.ready : t().notice.notFilled, isFilled)
     },
 
     /** v: folds linear runs (or unfolds them all), the selection kept in sight. */
@@ -1143,7 +1134,7 @@ export function createController(host: Host) {
         const target = focusTarget()
 
         if (!target || !(isSafeRefName(target.ref) || /^[0-9a-f]{40,64}$/.test(target.ref))) {
-          return showNotice('Sélectionne un commit ou une branche à suivre', false)
+          return showNotice(t().notice.followWhat, false)
         }
 
         next = { kind: 'focus', ...target, isFirstParent: false }
@@ -1164,7 +1155,7 @@ export function createController(host: Host) {
     async jumpHead() {
       const head = repoOf()?.head.hash
 
-      if (!head) return showNotice('Pas encore de commit', false)
+      if (!head) return showNotice(t().notice.noCommit, false)
 
       await reveal(head)
     },
@@ -1173,26 +1164,26 @@ export function createController(host: Host) {
     async copyHash() {
       const commit = selectedCommit()
 
-      if (!commit) return showNotice('Sélectionne un commit pour copier son hash', false)
+      if (!commit) return showNotice(t().notice.copyWhat, false)
 
       const isCopied = await host.copy(commit.hash).catch(() => false)
 
-      showNotice(isCopied ? `✓ Copié : ${commit.hash}` : 'Le presse-papiers n’a rien pris ici', false)
+      showNotice(isCopied ? t().notice.copied(commit.hash) : t().notice.notCopied, false)
     },
 
     /** m: marks the selected commit to compare another with, or takes the mark off. */
     toggleMark() {
       const commit = selectedCommit()
 
-      if (!commit) return showNotice('Sélectionne un commit à marquer', false)
+      if (!commit) return showNotice(t().notice.markWhat, false)
 
       if (model.mark === commit.hash) {
         set({ mark: null })
-        return showNotice('Marque retirée', false)
+        return showNotice(t().notice.unmarked, false)
       }
 
       set({ mark: commit.hash })
-      showNotice(`⚑ ${commit.hash.slice(0, 7)} marqué · sélectionne un autre commit, puis d pour comparer`, false)
+      showNotice(t().notice.marked(commit.hash.slice(0, 7)), false)
     },
 
     /** d: the selected commit (or the uncommitted changes) compared with the mark, else with HEAD. */
@@ -1204,11 +1195,11 @@ export function createController(host: Host) {
       const isWip = model.selected === WIP_KEY
       const selected = isWip ? null : selectedCommit()
       const base = commitOf(model.mark ?? repo.head.hash)
-      const howTo = 'Marque un commit avec m, puis d sur un autre pour les comparer'
+      const said = t().notice
 
-      if (!isWip && !selected) return showNotice('Sélectionne un commit à comparer', false)
-      if (!base) return showNotice(model.mark ? 'Le commit marqué n’est plus dans le graphe' : howTo, false)
-      if (selected?.hash === base.hash) return showNotice(model.mark ? 'Sélectionne un autre commit que la marque, puis d' : howTo, false)
+      if (!isWip && !selected) return showNotice(said.compareWhat, false)
+      if (!base) return showNotice(model.mark ? said.markGone : said.howToCompare, false)
+      if (selected?.hash === base.hash) return showNotice(model.mark ? said.otherThanMark : said.howToCompare, false)
 
       // The older first, so the comparison reads forward.
       const [from, to] = selected && selected.time < base.time ? [selected, base] : [base, selected]
@@ -1308,7 +1299,7 @@ export function createController(host: Host) {
     async nextHit() {
       const search = model.search
 
-      if (!search || search.hashes.length === 0) return showNotice('Aucune recherche en cours : g pour chercher', false)
+      if (!search || search.hashes.length === 0) return showNotice(t().notice.noSearch, false)
 
       const index = (search.index + 1) % search.hashes.length
       const hash = search.hashes[index]
@@ -1325,7 +1316,7 @@ export function createController(host: Host) {
       const stash = repo?.stashes.find(one => one.hash === commit?.hash)
 
       if (!repo) return
-      if (!stash) return showNotice('Sélectionne un stash (≡) pour l’appliquer', false)
+      if (!stash) return showNotice(t().notice.stashWhat, false)
 
       openBand({ kind: 'confirm', action: applyStashAction(stash, repo.status.length) }, 'act-n')
     },
@@ -1336,15 +1327,15 @@ export function createController(host: Host) {
       const commit = selectedCommit()
 
       if (!repo) return
-      if (!commit) return showNotice('Sélectionne un commit pour changer de branche', false)
+      if (!commit) return showNotice(t().notice.switchWhat, false)
       if (commit.stash) return stashNotice()
 
       const actions = switchTargets(repo, commit.hash).map(target => switchAction(repo, target))
       const [only] = actions
 
-      if (!only) return showNotice('HEAD est déjà sur ce commit', false)
+      if (!only) return showNotice(t().notice.alreadyHere, false)
 
-      openBand(actions.length === 1 ? { kind: 'confirm', action: only } : { kind: 'choose', title: '⎇ Changer de branche', actions }, 'act-n')
+      openBand(actions.length === 1 ? { kind: 'confirm', action: only } : { kind: 'choose', title: t().notice.switchTitle, actions }, 'act-n')
     },
 
     /** t: a form for a tag on the selected commit, its name guessed from the last version. */
@@ -1353,7 +1344,7 @@ export function createController(host: Host) {
       const commit = selectedCommit()
 
       if (!repo) return
-      if (!commit) return showNotice('Sélectionne un commit à tagger', false)
+      if (!commit) return showNotice(t().notice.tagWhat, false)
       if (commit.stash) return stashNotice()
 
       const tags = repo.refs.filter(ref => ref.kind === 'tag').map(ref => ref.name)
@@ -1398,7 +1389,7 @@ export function createController(host: Host) {
 
       if (!repo) return
 
-      const band: Band = { kind: 'preparing', title: '↑ Préparation du push…' }
+      const band: Band = { kind: 'preparing', title: t().push.preparing }
 
       openBand(band)
 
@@ -1415,7 +1406,7 @@ export function createController(host: Host) {
         )
       } catch (error) {
         if (model.action === band) {
-          openBand({ kind: 'info', title: '↑ Push impossible', lines: [messageOf(error)], isError: true }, 'act-n')
+          openBand({ kind: 'info', title: t().push.cannot, lines: [messageOf(error)], isError: true }, 'act-n')
         }
       }
     },
@@ -1440,7 +1431,7 @@ export function createController(host: Host) {
           const result = await host.write(args, { cwd: toplevel, env, timeoutMs })
 
           if (result.code !== 0) {
-            const done = i > 0 ? [`${i} étape${i > 1 ? 's' : ''} sur ${steps.length} faite${i > 1 ? 's' : ''} avant : ${displayCommand(args)} a échoué`] : []
+            const done = i > 0 ? [t().band.stepsDone(i, steps.length, displayCommand(args))] : []
 
             openBand({ kind: 'info', title: `✗ ${action.title}`, lines: [...errorLines(result), ...done], isError: true }, 'act-n')
             await refresh('all')
@@ -1551,7 +1542,7 @@ function errorLines(result: GitResult): string[] {
     .map(line => line.replace(/^(fatal|error): /, '').trim())
     .filter(line => line && !line.startsWith('hint:'))
 
-  return lines.length > 0 ? lines.slice(0, 4) : [`git a quitté avec le code ${result.code}`]
+  return lines.length > 0 ? lines.slice(0, 4) : [t().band.exited(result.code)]
 }
 
 function messageOf(error: unknown): string {

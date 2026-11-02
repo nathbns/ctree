@@ -1,6 +1,6 @@
 {
   "name": "ctree",
-  "description": "ctree, le graphe git de Claude Code",
+  "description": "ctree, the git graph for Claude Code",
   "owner": {
     "name": "nathbns"
   },
@@ -8,7 +8,7 @@
     {
       "name": "ctree",
       "source": "./",
-      "description": "Graphe git du dépôt à côté de la conversation : suit les commandes git de Claude, retient celles qui perdraient du travail, les annule ; recherche, comparaison, stashs"
+      "description": "The repository's git graph beside the conversation: follows Claude's git commands, holds the ones that would lose work, undoes them; search, compare, stashes"
     }
   ]
 }

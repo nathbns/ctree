@@ -21,6 +21,7 @@ import {
   WIP,
 } from '../src/rows'
 import { counts, relativeDate, shortAuthor, shortHash, statusLetter } from '../src/format'
+import { t } from '../src/i18n'
 import { describeMoves } from '../src/journal'
 import { matchWords } from '../src/search'
 import type { Band, CompareMode, Controller, DiffMode, SearchMode, SessionMode } from './controller'
@@ -45,37 +46,46 @@ type Key = { hotkey: string; long: string; short: string; onPress?: () => void }
 /** The list's keys, most used first: those that fit are drawn, the rest work hidden, all listed by h. */
 function listKeys(ctl: Controller): Key[] {
   const isStash = ctl.isStashSelected()
+  const said = t().keys
+  const key = (hotkey: string, [long, short]: readonly string[], onPress?: () => void): Key => ({
+    hotkey,
+    long: long ?? '',
+    short: short ?? '',
+    ...(onPress ? { onPress } : {}),
+  })
+  const next = key('n', said.next, () => void ctl.nextHit())
+  const apply = key('a', said.apply, () => ctl.beginApplyStash())
 
   return [
-    { hotkey: 'j', long: '↓', short: '↓', onPress: () => ctl.move(1) },
-    { hotkey: 'k', long: '↑', short: '↑', onPress: () => ctl.move(-1) },
-    { hotkey: '⏎', long: 'ouvrir', short: '' },
-    ...(ctl.model.search ? [{ hotkey: 'n', long: 'suivant', short: 'suiv.', onPress: () => void ctl.nextHit() }] : []),
-    ...(isStash ? [{ hotkey: 'a', long: 'appliquer', short: 'appl.', onPress: () => ctl.beginApplyStash() }] : []),
-    { hotkey: 'g', long: 'chercher', short: 'cherch.', onPress: () => ctl.beginSearch() },
-    { hotkey: 'e', long: 'expliquer', short: 'expl.', onPress: () => void ctl.explain() },
-    { hotkey: 'd', long: 'comparer', short: 'comp.', onPress: () => void ctl.beginCompare() },
-    { hotkey: 'm', long: 'marquer', short: 'marq.', onPress: () => ctl.toggleMark() },
-    { hotkey: 'c', long: 'branche', short: 'br.', onPress: () => ctl.beginSwitch() },
-    { hotkey: 'p', long: 'push', short: 'push', onPress: () => void ctl.beginPush() },
-    { hotkey: 'u', long: 'annuler', short: '⟲', onPress: () => void ctl.beginUndo() },
-    { hotkey: 'v', long: 'vue', short: 'vue', onPress: () => ctl.toggleOverview() },
-    { hotkey: 'f', long: 'focus', short: 'focus', onPress: () => ctl.cycleFocus() },
-    { hotkey: 'i', long: 'HEAD', short: 'HEAD', onPress: () => void ctl.jumpHead() },
-    { hotkey: 'y', long: 'copier', short: 'copie', onPress: () => void ctl.copyHash() },
-    { hotkey: 'l', long: 'journal', short: 'journal', onPress: () => ctl.openJournal() },
-    { hotkey: 's', long: 'session', short: 'session', onPress: () => void ctl.openSession() },
-    { hotkey: 't', long: 'tag', short: 'tag', onPress: () => ctl.beginTag() },
-    ...(isStash ? [] : [{ hotkey: 'a', long: 'appliquer', short: 'appl.', onPress: () => ctl.beginApplyStash() }]),
-    ...(ctl.model.search ? [] : [{ hotkey: 'n', long: 'suivant', short: 'suiv.', onPress: () => void ctl.nextHit() }]),
-    { hotkey: 'z', long: ctl.placement === 'band' ? 'panneau' : 'agrandir', short: ctl.placement === 'band' ? 'panneau' : 'large', onPress: () => void ctl.zoom() },
-    { hotkey: 'r', long: 'maj', short: 'maj', onPress: () => void ctl.refresh() },
-    { hotkey: 'q', long: 'fermer', short: '✕', onPress: () => void ctl.close() },
+    key('j', [said.down, said.down], () => ctl.move(1)),
+    key('k', [said.up, said.up], () => ctl.move(-1)),
+    key('⏎', said.open),
+    ...(ctl.model.search ? [next] : []),
+    ...(isStash ? [apply] : []),
+    key('g', said.search, () => ctl.beginSearch()),
+    key('e', said.explain, () => void ctl.explain()),
+    key('d', said.compare, () => void ctl.beginCompare()),
+    key('m', said.mark, () => ctl.toggleMark()),
+    key('c', said.branch, () => ctl.beginSwitch()),
+    key('p', said.push, () => void ctl.beginPush()),
+    key('u', said.undo, () => void ctl.beginUndo()),
+    key('v', said.view, () => ctl.toggleOverview()),
+    key('f', said.focus, () => ctl.cycleFocus()),
+    key('i', said.head, () => void ctl.jumpHead()),
+    key('y', said.copy, () => void ctl.copyHash()),
+    key('l', said.journal, () => ctl.openJournal()),
+    key('s', said.session, () => void ctl.openSession()),
+    key('t', said.tag, () => ctl.beginTag()),
+    ...(isStash ? [] : [apply]),
+    ...(ctl.model.search ? [] : [next]),
+    key('z', ctl.placement === 'band' ? said.pane : said.wide, () => void ctl.zoom()),
+    key('r', said.reload, () => void ctl.refresh()),
+    key('q', said.close, () => void ctl.close()),
   ]
 }
 
-/** `h: aide`, drawn last whatever the width: it lists every key. */
-const HELP_KEY = 'h: aide'
+/** `h: help`, drawn last whatever the width: it lists every key. */
+const helpKey = () => `h: ${t().keys.help}`
 
 const keyText = (key: Key, isLong: boolean) => {
   const label = isLong ? key.long : key.short
@@ -107,14 +117,14 @@ function rowsOf(texts: readonly string[], width: number, gap: number): number {
 
 /**
  * The keys drawn: the most used, in order, as many as fit in `rows` rows of
- * `width` with HELP_KEY after them. The others are drawn hidden: they work.
+ * `width` with the help key after them. The others are drawn hidden: they work.
  */
 export function fitKeys(keys: readonly Key[], width: number, rows: number): { shown: Key[]; hidden: Key[]; isLong: boolean; gap: number } {
   const isLong = width >= 120
   const gap = isLong ? 2 : 1
   let count = 0
 
-  while (count < keys.length && rowsOf([...keys.slice(0, count + 1).map(key => keyText(key, isLong)), HELP_KEY], width, gap) <= rows) {
+  while (count < keys.length && rowsOf([...keys.slice(0, count + 1).map(key => keyText(key, isLong)), helpKey()], width, gap) <= rows) {
     count += 1
   }
 
@@ -148,6 +158,7 @@ export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
   const { Box, Text } = ui
   const width = Math.max(20, frame.columns - 1)
   const snapshot = ctl.model.snapshot
+  const said = t().view
 
   if (ctl.model.mode.kind === 'diff') {
     return diffTree(ui, ctl, ctl.model.mode, width)
@@ -174,27 +185,27 @@ export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
   }
 
   if (snapshot === null) {
-    return message(ui, frame, [{ text: 'Lecture du dépôt…', dim: true }], [])
+    return message(ui, frame, [{ text: said.reading, dim: true }], [])
   }
 
   if (snapshot.kind === 'no-repo') {
-    return message(ui, frame, [{ text: snapshot.reason === 'bare' ? 'Dépôt nu : pas d’arbre de travail à montrer.' : 'Pas de dépôt git ici.', bold: true }], [
+    return message(ui, frame, [{ text: snapshot.reason === 'bare' ? said.bare : said.noRepo, bold: true }], [
       { text: truncate(snapshot.cwd, width), dim: true },
-      { text: 'Le panneau se met à jour dès qu’un dépôt existe (git init, git clone).', dim: true },
+      { text: said.waiting, dim: true },
     ], ctl, width)
   }
 
   if (snapshot.kind === 'error') {
-    return message(ui, frame, [{ text: 'git a échoué', color: 'error', bold: true }], [
+    return message(ui, frame, [{ text: said.failed, color: 'error', bold: true }], [
       { text: truncate(snapshot.message, width) },
-      { text: 'r pour réessayer.', dim: true },
+      { text: said.retry, dim: true },
     ], ctl, width)
   }
 
   const view = ctl.model.view
 
   if (!view) {
-    return message(ui, frame, [{ text: 'Lecture du dépôt…', dim: true }], [])
+    return message(ui, frame, [{ text: said.reading, dim: true }], [])
   }
 
   const hasWip = snapshot.status.length > 0
@@ -228,7 +239,7 @@ export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
       })
   const matches = new Set(search?.hashes ?? [])
   const emptyNote: Segment[] =
-    items.length === 0 ? [{ text: '   Aucun commit pour l’instant.', dim: true }] : []
+    items.length === 0 ? [{ text: said.empty, dim: true }] : []
 
   // The ring starts on the selected row, unless a band holds it.
   const rowOf = (item: Item) => {
@@ -271,11 +282,12 @@ export function paneTree(ui: Ui, ctl: Controller, frame: Frame): RenderElement {
 /** The band of a change: what it runs, then y or n. Its cancel key holds the ring. */
 function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderElement {
   const { Box, Text, Button, Input } = ui
+  const said = t()
   const line = (text: string) => truncate(text, width)
   const act = (hotkey: string, label: string, onPress: () => void, isStart = false) => (
     <Button key={`act-${hotkey}`} plain hotkey={hotkey} label={label} {...(isStart ? { autoFocus: true as const } : {})} onPress={onPress} />
   )
-  const cancel = (label = 'annuler') => act('n', label, () => ctl.cancelAction(), true)
+  const cancel = (label = said.band.cancel) => act('n', label, () => ctl.cancelAction(), true)
 
   switch (band.kind) {
     case 'preparing':
@@ -289,7 +301,7 @@ function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderEle
       return (
         <Box flexDirection="column">
           <Text bold>{line(band.action.title)}</Text>
-          <Text dimColor>{line(`  ${displayCommand(band.action.args)} en cours…`)}</Text>
+          <Text dimColor>{line(said.band.running(displayCommand(band.action.args)))}</Text>
         </Box>
       )
     case 'confirm':
@@ -315,15 +327,15 @@ function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderEle
         </Box>
       )
     case 'tag-form': {
-      const title = `◇ Nouveau tag sur ${shortHash(band.commit.hash)} « ${band.commit.subject} »`
+      const title = said.tagForm.title(shortHash(band.commit.hash), band.commit.subject)
 
       if (!Input) {
         return (
           <Box flexDirection="column">
             <Text bold>{line(title)}</Text>
-            <Text dimColor>{line('  Créer un tag demande un champ de texte, absent ici.')}</Text>
+            <Text dimColor>{line(said.tagForm.noField)}</Text>
             <Text dimColor> </Text>
-            <Box flexDirection="row" columnGap={2}>{cancel('fermer')}</Box>
+            <Box flexDirection="row" columnGap={2}>{cancel(said.band.close)}</Box>
           </Box>
         )
       }
@@ -338,27 +350,27 @@ function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderEle
           <Text bold>{line(title)}</Text>
           <Input
             key="tag-name"
-            label="Nom"
+            label={said.tagForm.name}
             value={band.name}
             placeholder="v1.0.0"
-            submitLabel="valider"
+            submitLabel={said.tagForm.submit}
             autoFocus
             onInput={value => ctl.setTagField('name', value)}
             onSubmit={submit('name')}
           />
           <Input
             key="tag-message"
-            label="Message"
+            label={said.tagForm.message}
             value={band.message}
-            placeholder={band.name || 'message du tag'}
-            submitLabel="valider"
+            placeholder={band.name || said.tagForm.placeholder}
+            submitLabel={said.tagForm.submit}
             onInput={value => ctl.setTagField('message', value)}
             onSubmit={submit('message')}
           />
           {band.error ? (
             <Text color="error">{line(`  ${band.error}`)}</Text>
           ) : (
-            <Text dimColor>{line('  ⏎ valider · Tab champ suivant · Échap annuler')}</Text>
+            <Text dimColor>{line(said.tagForm.hint)}</Text>
           )}
         </Box>
       )
@@ -367,9 +379,9 @@ function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderEle
       if (!Input) {
         return (
           <Box flexDirection="column">
-            <Text bold>⌕ Chercher</Text>
-            <Text dimColor>{line('  Chercher demande un champ de texte, absent ici.')}</Text>
-            <Box flexDirection="row" columnGap={2}>{cancel('fermer')}</Box>
+            <Text bold>{said.search.field}</Text>
+            <Text dimColor>{line(said.search.noField)}</Text>
+            <Box flexDirection="row" columnGap={2}>{cancel(said.band.close)}</Box>
           </Box>
         )
       }
@@ -378,15 +390,15 @@ function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderEle
         <Box flexDirection="column">
           <Input
             key="search-query"
-            label="⌕ Chercher"
+            label={said.search.field}
             value={band.query}
-            placeholder="message, auteur, hash ou fichier"
-            submitLabel="chercher"
+            placeholder={said.search.placeholder}
+            submitLabel={said.search.submit}
             autoFocus
             onInput={value => ctl.setSearchQuery(value)}
             onSubmit={value => void ctl.submitSearch(value)}
           />
-          <Text dimColor>{line('  ⏎ chercher · Échap annuler · dans toutes les branches, majuscules ignorées')}</Text>
+          <Text dimColor>{line(said.search.hint)}</Text>
         </Box>
       )
     case 'info':
@@ -396,17 +408,17 @@ function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderEle
           {band.lines.map(text => (
             <Text dimColor={!band.isError}>{line(`  ${text}`)}</Text>
           ))}
-          <Box flexDirection="row" columnGap={2}>{cancel('fermer')}</Box>
+          <Box flexDirection="row" columnGap={2}>{cancel(said.band.close)}</Box>
         </Box>
       )
     case 'guard':
       return (
         <Box flexDirection="column">
-          <Text bold color="warning">{line(`⚠ Claude veut lancer « ${band.command} »`)}</Text>
+          <Text bold color="warning">{line(said.guard.bandTitle(band.command))}</Text>
           {band.lines.map(text => (
             <Text>{line(`  ${text}`)}</Text>
           ))}
-          <Text dimColor>{line('  Réponds dans la question de Claude Code.')}</Text>
+          <Text dimColor>{line(said.guard.bandHint)}</Text>
         </Box>
       )
   }
@@ -417,16 +429,16 @@ function journalTree(ui: Ui, ctl: Controller, width: number, now: number): Rende
   const { Box, Button, Text } = ui
   const journal = ctl.model.journal
   const band = ctl.model.action
+  const said = t().journal
   const line = (text: string) => truncate(text, width)
 
   return (
     <Box flexDirection="column">
-      <Text bold>{line(`⟲ Journal des commandes git de Claude · ${journal.length}`)}</Text>
-      {journal.length === 0 && <Text dimColor>{line('  Claude n’a encore rien changé avec git dans cette session.')}</Text>}
+      <Text bold>{line(said.title(journal.length))}</Text>
+      {journal.length === 0 && <Text dimColor>{line(said.empty)}</Text>}
       {journal.map((entry, i) => {
         const when = relativeDate(Math.floor(entry.at / 1000), now)
-        const who = entry.isSubagent ? ' · sous-agent' : ''
-        const label = line(`tour ${entry.turn} · ${entry.command}${who}${entry.isUndone ? ' · annulé' : ''} · ${when}`)
+        const label = line(said.entry(entry.turn, entry.command, entry.isSubagent, entry.isUndone === true, when))
 
         return (
           <Box flexDirection="column">
@@ -439,7 +451,7 @@ function journalTree(ui: Ui, ctl: Controller, width: number, now: number): Rende
             >
               {label}
             </Button>
-            <Text dimColor>{line(`    ${describeMoves(entry).join(' · ') || 'rien de changé'}`)}</Text>
+            <Text dimColor>{line(`    ${describeMoves(entry).join(' · ') || said.nothing}`)}</Text>
           </Box>
         )
       })}
@@ -452,18 +464,19 @@ function journalTree(ui: Ui, ctl: Controller, width: number, now: number): Rende
 function sessionTree(ui: Ui, ctl: Controller, mode: SessionMode, width: number, now: number): RenderElement {
   const { Box, Text } = ui
   const line = (text: string) => truncate(text, width)
+  const said = t().session
   const data = mode.data
 
   const body = (() => {
     if (mode.error) return [<Text color="error">{line(`  ${mode.error}`)}</Text>]
-    if (!data) return [<Text dimColor>{line('  Lecture de la session…')}</Text>]
+    if (!data) return [<Text dimColor>{line(said.reading)}</Text>]
 
     const changes = data.refs.map(ref => {
       const what =
         ref.change === 'new'
-          ? `nouvelle (${shortHash(ref.after ?? '')})`
+          ? said.new(shortHash(ref.after ?? ''))
           : ref.change === 'deleted'
-            ? `supprimée (était ${shortHash(ref.before ?? '')})`
+            ? said.deleted(shortHash(ref.before ?? ''))
             : `${shortHash(ref.before ?? '')} → ${shortHash(ref.after ?? '')}${ref.gained !== undefined ? `  +${ref.gained} −${ref.lost ?? 0}` : ''}`
 
       return <Text>{line(`    ${ref.name.padEnd(22)} ${what}`)}</Text>
@@ -472,23 +485,23 @@ function sessionTree(ui: Ui, ctl: Controller, mode: SessionMode, width: number, 
     const deleted = data.files.reduce((sum, file) => sum + (file.deleted ?? 0), 0)
 
     return [
-      <Text bold>{line(`  Branches et tags · ${data.refs.length}`)}</Text>,
-      ...(changes.length ? changes : [<Text dimColor>{line('    rien n’a bougé')}</Text>]),
-      <Text bold>{line(`  Commits ✦ · ${data.commits.length}`)}</Text>,
+      <Text bold>{line(said.refs(data.refs.length))}</Text>,
+      ...(changes.length ? changes : [<Text dimColor>{line(said.nothingMoved)}</Text>]),
+      <Text bold>{line(said.commits(data.commits.length))}</Text>,
       ...(data.commits.length
         ? data.commits.slice(0, 20).map(commit => <Text>{line(`    ${shortHash(commit.hash)} ${commit.subject}`)}</Text>)
-        : [<Text dimColor>{line('    aucun')}</Text>]),
-      <Text bold>{line(`  Fichiers changés par HEAD · ${data.files.length}${data.files.length ? ` · +${added} −${deleted}` : ''}`)}</Text>,
+        : [<Text dimColor>{line(said.none)}</Text>]),
+      <Text bold>{line(said.files(data.files.length, added, deleted))}</Text>,
       ...(data.files.length
         ? data.files.slice(0, 30).map(file => <Text>{line(`    ${statusLetter(file.status)} ${file.path}  ${counts(file.added, file.deleted)}`)}</Text>)
-        : [<Text dimColor>{line('    aucun')}</Text>]),
+        : [<Text dimColor>{line(said.none)}</Text>]),
     ]
   })()
 
   return (
     <Box flexDirection="column">
       {keys(ui, ctl, width, 'session')}
-      <Text bold color="claude">{line(`✦ Cette session${data ? ` · depuis ${relativeDate(Math.floor(data.since / 1000), now)}` : ''}`)}</Text>
+      <Text bold color="claude">{line(said.title(data ? relativeDate(Math.floor(data.since / 1000), now) : null))}</Text>
       {body}
     </Box>
   )
@@ -498,23 +511,24 @@ function sessionTree(ui: Ui, ctl: Controller, mode: SessionMode, width: number, 
 function compareTree(ui: Ui, ctl: Controller, mode: CompareMode, width: number): RenderElement {
   const { Box, Button, Text } = ui
   const line = (text: string) => truncate(text, width)
-  const name = (commit: CompareMode['from']) => `${shortHash(commit.hash)} « ${commit.subject} »`
-  const to = mode.to ? name(mode.to) : 'les modifications non commitées'
+  const said = t().compare
+  const name = (commit: CompareMode['from']) => `${shortHash(commit.hash)} ${t().action.tagSubject(commit.subject)}`
+  const to = mode.to ? name(mode.to) : said.wip
   const files = mode.files.state === 'ready' ? mode.files.files : []
   const added = files.reduce((sum, file) => sum + (file.added ?? 0), 0)
   const deleted = files.reduce((sum, file) => sum + (file.deleted ?? 0), 0)
   const apart = mode.counts && mode.to
     ? [
-        `${shortHash(mode.to.hash)} a ${plural(mode.counts.ahead, 'commit')} de plus`,
-        ...(mode.counts.behind > 0 ? [`${shortHash(mode.from.hash)} en a ${mode.counts.behind} que l’autre n’a pas`] : []),
+        said.more(shortHash(mode.to.hash), mode.counts.ahead),
+        ...(mode.counts.behind > 0 ? [said.lacks(shortHash(mode.from.hash), mode.counts.behind)] : []),
       ]
     : []
-  const summary = [...apart, ...(mode.files.state === 'ready' ? [`${plural(files.length, 'fichier')}${files.length ? ` +${added} −${deleted}` : ''}`] : [])]
+  const summary = [...apart, ...(mode.files.state === 'ready' ? [said.files(files.length, added, deleted)] : [])]
 
   const body = (() => {
-    if (mode.files.state === 'loading') return [<Text dimColor>{line('  Lecture des différences…')}</Text>]
-    if (mode.files.state === 'error') return [<Text color="error">{line(`  git a échoué : ${mode.files.message}`)}</Text>]
-    if (files.length === 0) return [<Text dimColor>{line('  Aucune différence de contenu.')}</Text>]
+    if (mode.files.state === 'loading') return [<Text dimColor>{line(said.reading)}</Text>]
+    if (mode.files.state === 'error') return [<Text color="error">{line(`  ${t().view.gitFailed(mode.files.message)}`)}</Text>]
+    if (files.length === 0) return [<Text dimColor>{line(said.none)}</Text>]
 
     return files.slice(0, 300).map((file, i) => {
       const letter = statusLetter(file.status)
@@ -537,7 +551,7 @@ function compareTree(ui: Ui, ctl: Controller, mode: CompareMode, width: number):
       <Text bold color="suggestion">{line(`⇄ ${name(mode.from)} → ${to}`)}</Text>
       {summary.length > 0 && <Text dimColor>{line(`  ${summary.join(' · ')}`)}</Text>}
       {body}
-      {files.length > 300 && <Text dimColor>{line(`  … et ${files.length - 300} autres : git diff --stat`)}</Text>}
+      {files.length > 300 && <Text dimColor>{line(said.others(files.length - 300))}</Text>}
     </Box>
   )
 }
@@ -546,16 +560,15 @@ function compareTree(ui: Ui, ctl: Controller, mode: CompareMode, width: number):
 function searchTree(ui: Ui, ctl: Controller, mode: SearchMode, width: number, now: number): RenderElement {
   const { Box, Button, Text } = ui
   const line = (text: string) => truncate(text, width)
+  const said = t().search
   const result = mode.result
-  const missed = result?.missed.length ? ` · ${matchWords(result.missed)} : trop long, non cherché` : ''
-  const title = result
-    ? `⌕ « ${mode.query} » · ${result.hits.length === 0 ? 'rien trouvé' : plural(result.hits.length, 'commit')}${result.isCut ? ' (les plus récents)' : ''}${missed}`
-    : `⌕ « ${mode.query} » · recherche…`
+  const missed = result?.missed.length ? said.missed(matchWords(result.missed)) : ''
+  const title = said.title(mode.query, result ? result.hits.length : null, result?.isCut ?? false, missed)
 
   const body = (() => {
     if (mode.error) return [<Text color="error">{line(`  ${mode.error}`)}</Text>]
-    if (!result) return [<Text dimColor>{line('  Lecture de l’historique…')}</Text>]
-    if (result.hits.length === 0) return [<Text dimColor>{line('  Aucun commit ne correspond, dans le message, l’auteur, le hash ou les fichiers.')}</Text>]
+    if (!result) return [<Text dimColor>{line(said.reading)}</Text>]
+    if (result.hits.length === 0) return [<Text dimColor>{line(said.none)}</Text>]
 
     return result.hits.map((hit, i) => {
       const side = `${shortAuthor(hit.commit.author)} · ${relativeDate(hit.commit.time, now)} · ${matchWords(hit.by)}`
@@ -581,52 +594,6 @@ function searchTree(ui: Ui, ctl: Controller, mode: SearchMode, width: number, no
   )
 }
 
-/** Every key, by what it is for, and what the graph's marks mean. */
-const HELP: readonly (readonly [string, readonly (readonly [string, string])[]])[] = [
-  ['Se déplacer', [
-    ['j k ↓ ↑', 'commit suivant, précédent (la molette fait défiler)'],
-    ['⏎', 'ouvrir un commit (ses fichiers), puis un fichier (son diff)'],
-    ['i', 'revenir à HEAD'],
-    ['g', 'chercher dans le message, l’auteur, le hash ou les fichiers'],
-    ['n', 'résultat suivant de la recherche ; Échap efface la recherche'],
-  ]],
-  ['Lire l’historique', [
-    ['v', 'vue d’ensemble : replie les suites de commits sans embranchement'],
-    ['f', 'focus : la branche du commit, puis son 1er parent seul, puis tout'],
-    ['m', 'marquer un commit ; d sur un autre les compare'],
-    ['d', 'comparer avec la marque (sans marque : avec HEAD)'],
-    ['y', 'copier le hash complet'],
-    ['e', 'préparer une question pour Claude dans le prompt'],
-  ]],
-  ['Changer le dépôt (toujours confirmé, la commande affichée)', [
-    ['c', 'changer de branche'],
-    ['t', 'créer un tag annoté'],
-    ['p', 'pousser la branche (jamais en force)'],
-    ['a', 'appliquer le stash sélectionné (il reste dans la liste)'],
-  ]],
-  ['Ce que fait Claude', [
-    ['u', 'annuler sa dernière commande git'],
-    ['l', 'journal de ses commandes git, chacune annulable'],
-    ['s', 'ce que cette session a changé ; e y prépare une description de PR'],
-  ]],
-  ['Affichage', [
-    ['z', 'pleine largeur au-dessus du prompt (Ctrl+X Tab pour le piloter), ou panneau'],
-    ['r', 'relire le dépôt'],
-    ['q Échap', 'fermer, ou revenir en arrière'],
-  ]],
-  ['Dans le graphe', [
-    ['● ○ ◉', 'commit, merge, HEAD'],
-    ['◌ ┊', 'modifications non commitées, reliées à HEAD'],
-    ['≡', 'stash, sur le commit où il a été fait'],
-    ['✦', 'commit fait pendant cette session'],
-    ['⚑', 'commit marqué pour une comparaison'],
-    ['▸ 7 commits', 'suite repliée par la vue d’ensemble (⏎ la déplie)'],
-    ['main ⇄ origin', 'branche au même commit que sa branche distante'],
-    ['↑2 ↓1', 'commits d’avance et de retard sur la branche distante'],
-    ['◇ v1.0', 'tag'],
-  ]],
-]
-
 function helpTree(ui: Ui, ctl: Controller, width: number): RenderElement {
   const { Box, Text } = ui
   const line = (text: string) => truncate(text, width)
@@ -635,8 +602,8 @@ function helpTree(ui: Ui, ctl: Controller, width: number): RenderElement {
   return (
     <Box flexDirection="column">
       {keys(ui, ctl, width, 'help')}
-      <Text bold>ctree · aide</Text>
-      {HELP.flatMap(([title, entries]) => [
+      <Text bold>{t().help.title}</Text>
+      {t().help.sections.flatMap(([title, entries]) => [
         <Text bold color="suggestion">{line(`  ${title}`)}</Text>,
         ...entries.map(([what, does]) => (
           <Text>
@@ -649,33 +616,30 @@ function helpTree(ui: Ui, ctl: Controller, width: number): RenderElement {
   )
 }
 
-function plural(count: number, word: string): string {
-  return `${count} ${word}${count > 1 ? 's' : ''}`
-}
-
 function diffTree(ui: Ui, ctl: Controller, mode: DiffMode, width: number): RenderElement {
   const { Box, Text, Code } = ui
+  const said = t().view
   const where = mode.compare
-    ? `${shortHash(mode.compare.from.hash)} → ${mode.compare.to ? shortHash(mode.compare.to.hash) : 'non commité'}`
-    : mode.commit ? `${shortHash(mode.commit.hash)} ${mode.commit.subject}` : 'non commité'
+    ? `${shortHash(mode.compare.from.hash)} → ${mode.compare.to ? shortHash(mode.compare.to.hash) : said.uncommitted}`
+    : mode.commit ? `${shortHash(mode.commit.hash)} ${mode.commit.subject}` : said.uncommitted
   const name = mode.change.oldPath ? `${mode.change.oldPath} → ${mode.change.path}` : mode.change.path
   const title = truncate(`${statusLetter(mode.change.status)} ${name} · ${where}`, width)
 
   const body = (() => {
     switch (mode.diff.kind) {
       case 'loading':
-        return <Text dimColor>Lecture du diff…</Text>
+        return <Text dimColor>{said.diffReading}</Text>
       case 'error':
-        return <Text color="error">{`git a échoué : ${mode.diff.message}`}</Text>
+        return <Text color="error">{said.gitFailed(mode.diff.message)}</Text>
       case 'binary':
-        return <Text dimColor>Fichier binaire : pas de diff texte.</Text>
+        return <Text dimColor>{said.binary}</Text>
       case 'empty':
-        return <Text dimColor>Aucune différence de contenu (mode ou renommage seul).</Text>
+        return <Text dimColor>{said.noDiff}</Text>
       case 'hunks':
         return (
           <Box flexDirection="column">
             <Code format="diff" source={mode.diff.source} path={mode.change.path} />
-            {mode.diff.isCut && <Text dimColor>… diff tronqué : la suite avec git show.</Text>}
+            {mode.diff.isCut && <Text dimColor>{said.diffCut}</Text>}
           </Box>
         )
     }
@@ -732,16 +696,18 @@ function keys(
   where: 'list' | 'diff' | 'message' | 'journal' | 'session' | 'compare' | 'search' | 'help',
 ): RenderElement {
   const { Box, Button, Text } = ui
+  const said = t().keys
   const key = (hotkey: string, label: string, onPress: () => void) => (
     <Button key={`key-${hotkey}`} plain hotkey={hotkey} label={label} dimColor onPress={onPress} />
   )
+  const [explain = ''] = said.explain
 
   if (where === 'diff') {
     return (
       <Box flexDirection="row" columnGap={2}>
-        {key('q', 'retour', () => ctl.back())}
-        {key('e', 'expliquer', () => void ctl.explain())}
-        <Text dimColor>↑↓ défiler</Text>
+        {key('q', said.back, () => ctl.back())}
+        {key('e', explain, () => void ctl.explain())}
+        <Text dimColor>{said.scroll}</Text>
       </Box>
     )
   }
@@ -749,9 +715,9 @@ function keys(
   if (where === 'journal') {
     return (
       <Box flexDirection="row" columnGap={2}>
-        <Text dimColor>⏎ annuler celle-ci</Text>
-        {key('u', 'annuler la dernière', () => void ctl.beginUndo())}
-        {key('q', 'retour', () => ctl.back())}
+        <Text dimColor>{said.undoThis}</Text>
+        {key('u', said.undoLast, () => void ctl.beginUndo())}
+        {key('q', said.back, () => ctl.back())}
       </Box>
     )
   }
@@ -759,9 +725,9 @@ function keys(
   if (where === 'session') {
     return (
       <Box flexDirection="row" columnGap={2}>
-        {key('e', 'description de PR', () => void ctl.explain())}
-        {key('q', 'retour', () => ctl.back())}
-        <Text dimColor>↑↓ défiler</Text>
+        {key('e', said.pr, () => void ctl.explain())}
+        {key('q', said.back, () => ctl.back())}
+        <Text dimColor>{said.scroll}</Text>
       </Box>
     )
   }
@@ -769,9 +735,9 @@ function keys(
   if (where === 'compare') {
     return (
       <Box flexDirection="row" columnGap={2}>
-        <Text dimColor>⏎ diff du fichier</Text>
-        {key('e', 'expliquer', () => void ctl.explain())}
-        {key('q', 'retour', () => ctl.back())}
+        <Text dimColor>{said.fileDiff}</Text>
+        {key('e', explain, () => void ctl.explain())}
+        {key('q', said.back, () => ctl.back())}
       </Box>
     )
   }
@@ -779,9 +745,9 @@ function keys(
   if (where === 'search') {
     return (
       <Box flexDirection="row" columnGap={2}>
-        <Text dimColor>⏎ voir dans le graphe</Text>
-        {key('g', 'nouvelle recherche', () => ctl.beginSearch())}
-        {key('q', 'retour', () => ctl.back())}
+        <Text dimColor>{said.showInGraph}</Text>
+        {key('g', said.newSearch, () => ctl.beginSearch())}
+        {key('q', said.back, () => ctl.back())}
       </Box>
     )
   }
@@ -789,8 +755,8 @@ function keys(
   if (where === 'help') {
     return (
       <Box flexDirection="row" columnGap={2}>
-        {key('q', 'retour', () => ctl.back())}
-        <Text dimColor>↑↓ défiler</Text>
+        {key('q', said.back, () => ctl.back())}
+        <Text dimColor>{said.scroll}</Text>
       </Box>
     )
   }
@@ -798,8 +764,8 @@ function keys(
   if (where === 'message') {
     return (
       <Box flexDirection="row" columnGap={2}>
-        {key('r', 'rafraîchir', () => void ctl.refresh())}
-        {key('q', 'fermer', () => void ctl.close())}
+        {key('r', said.reload[0] ?? '', () => void ctl.refresh())}
+        {key('q', said.close[0] ?? '', () => void ctl.close())}
       </Box>
     )
   }
@@ -812,7 +778,7 @@ function keys(
     <Box flexDirection="column">
       <Box flexDirection="row" flexWrap="wrap" columnGap={fit.gap}>
         {fit.shown.map(draw)}
-        {key('h', 'aide', () => ctl.openHelp())}
+        {key('h', said.help, () => ctl.openHelp())}
       </Box>
       {/* Not drawn, still pressed by their hotkeys. */}
       <Box display="none">{fit.hidden.map(draw)}</Box>

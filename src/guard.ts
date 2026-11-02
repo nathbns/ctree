@@ -6,6 +6,7 @@
 import * as Cmd from './git-commands'
 import { FIELD } from './git-commands'
 import { parseLog, parseStatus } from './git-parse'
+import { type CommitsShown, type Messages, t } from './i18n'
 import type { GitRunner, StatusEntry } from './types'
 
 /** One `git …` found in a shell command: its subcommand and arguments. */
@@ -120,7 +121,7 @@ export type Risk =
   | { kind: 'push-delete'; remote: string | null; branches: string[] }
   | { kind: 'branch-delete'; branches: string[] }
   /** Rewrites or prunes history in ways hard to come back from. */
-  | { kind: 'other'; what: string }
+  | { kind: 'other'; what: 'rewrite' | 'reflog' | 'prune' | 'delete-ref'; ref?: string }
 
 const isOption = (word: string) => word.startsWith('-')
 
@@ -208,13 +209,13 @@ export function riskOf(call: GitCall): Risk | null {
     }
     case 'filter-branch':
     case 'filter-repo':
-      return { kind: 'other', what: 'réécrit tout l’historique' }
+      return { kind: 'other', what: 'rewrite' }
     case 'reflog':
-      return positional(args)[0] === 'expire' || positional(args)[0] === 'delete' ? { kind: 'other', what: 'efface le reflog, le filet de secours de git' } : null
+      return positional(args)[0] === 'expire' || positional(args)[0] === 'delete' ? { kind: 'other', what: 'reflog' } : null
     case 'gc':
-      return args.some(arg => /^--prune(=now|=all)?$/.test(arg)) ? { kind: 'other', what: 'supprime pour de bon les commits que plus rien ne référence' } : null
+      return args.some(arg => /^--prune(=now|=all)?$/.test(arg)) ? { kind: 'other', what: 'prune' } : null
     case 'update-ref':
-      return set.has('-d') ? { kind: 'other', what: `supprime la référence ${positional(args)[0] ?? ''}`.trim() } : null
+      return set.has('-d') ? { kind: 'other', what: 'delete-ref', ref: positional(args)[0] ?? '' } : null
     default:
       return null
   }
@@ -232,10 +233,32 @@ export type Context = {
   branch: string | null
 }
 
-const plural = (count: number, one: string, many: string) => `${count} ${count > 1 ? many : one}`
+/**
+ * One thing a risky command would lose, read from git before it runs; worded
+ * by `lossText` in either language (the question in the person's, the
+ * refusal Claude reads in English).
+ */
+export type Loss =
+  /** Commits no branch, remote branch or tag will hold once the branch moves. */
+  | { kind: 'orphaned'; commits: CommitsShown }
+  /** Tracked files whose uncommitted changes go. */
+  | { kind: 'changes'; files: readonly string[] }
+  | { kind: 'untracked'; files: readonly string[] }
+  /** `stash@{1} WIP on main: …` each. */
+  | { kind: 'stashes'; stashes: readonly string[] }
+  | { kind: 'remote-loses'; remote: string; branch: string; commits: CommitsShown }
+  /** A forced push whose remote side could not be read. */
+  | { kind: 'remote-rewritten'; targets: readonly string[] }
+  | { kind: 'remote-deleted'; remote: string; branch: string; commits: CommitsShown | null }
+  | { kind: 'branch-only'; branch: string; commits: CommitsShown }
+  | { kind: 'other'; what: 'rewrite' | 'reflog' | 'prune' | 'delete-ref'; ref?: string }
+  /** Run in another repository (`git -C`): not read. */
+  | { kind: 'elsewhere'; command: string }
+  /** git failed while reading what it loses. */
+  | { kind: 'unchecked'; command: string }
 
-/** The commits only `revs` reach, as `n commits (abc1234 subject, …)`. */
-async function commitsOnly(git: GitRunner, toplevel: string, revs: readonly string[]): Promise<string | null> {
+/** The commits only `revs` reach: how many, and the first two by hash and subject. */
+async function commitsOnly(git: GitRunner, toplevel: string, revs: readonly string[]): Promise<CommitsShown | null> {
   const result = await git(Cmd.rangeLog(revs), { cwd: toplevel })
 
   if (result.code !== 0) return null
@@ -244,10 +267,11 @@ async function commitsOnly(git: GitRunner, toplevel: string, revs: readonly stri
 
   if (commits.length === 0) return null
 
-  const count = commits.length > 50 ? 'plus de 50 commits' : plural(commits.length, 'commit', 'commits')
-  const named = commits.slice(0, 2).map(commit => `${commit.hash.slice(0, 7)} ${commit.subject}`)
-
-  return `${count} (${named.join(' · ')}${commits.length > 2 ? ' · …' : ''})`
+  return {
+    count: commits.length,
+    isCut: commits.length > 50,
+    named: commits.slice(0, 2).map(commit => `${commit.hash.slice(0, 7)} ${commit.subject}`),
+  }
 }
 
 /** The tracked changes a command would throw away, under `paths` when given. */
@@ -258,14 +282,11 @@ function changedFiles(status: readonly StatusEntry[], paths: readonly string[]):
   return scope.length === 0 ? tracked : tracked.filter(entry => scope.some(path => entry.path === path || entry.path.startsWith(`${path.replace(/\/$/, '')}/`)))
 }
 
-const fileList = (files: readonly { path: string }[]) =>
-  `${files.slice(0, 3).map(file => file.path).join(', ')}${files.length > 3 ? ', …' : ''}`
-
 /**
- * What a risk would lose, in plain words, one line each: read from git
- * before the command runs. Empty when it would lose nothing after all.
+ * What a risk would lose, read from git before the command runs. Empty when
+ * it would lose nothing after all.
  */
-export async function consequences(git: GitRunner, risk: Risk, context: Context): Promise<string[]> {
+export async function consequences(git: GitRunner, risk: Risk, context: Context): Promise<Loss[]> {
   const at = { cwd: context.toplevel }
   const others = (except: string | null, kind: 'branches' | 'remotes') =>
     except ? [`--exclude=${except}`, `--${kind}`] : [`--${kind}`]
@@ -273,30 +294,30 @@ export async function consequences(git: GitRunner, risk: Risk, context: Context)
   switch (risk.kind) {
     case 'reset-hard': {
       const target = await git(Cmd.resolveCommit(risk.target), at)
-      const lines: string[] = []
+      const losses: Loss[] = []
 
       if (target.code === 0) {
         const lost = await commitsOnly(git, context.toplevel, ['HEAD', '--not', target.stdout.trim(), ...others(context.branch, 'branches'), '--remotes', '--tags'])
 
-        if (lost) lines.push(`${lost} ne seront plus sur aucune branche`)
+        if (lost) losses.push({ kind: 'orphaned', commits: lost })
       }
 
       const files = changedFiles(context.status, [])
 
-      if (files.length) lines.push(`${plural(files.length, 'fichier modifié perdu', 'fichiers modifiés perdus')} : ${fileList(files)}`)
+      if (files.length) losses.push({ kind: 'changes', files: files.map(file => file.path) })
 
-      return lines
+      return losses
     }
     case 'discard': {
       const files = changedFiles(context.status, risk.paths)
 
-      return files.length ? [`${plural(files.length, 'fichier modifié perdu', 'fichiers modifiés perdus')} : ${fileList(files)}`] : []
+      return files.length ? [{ kind: 'changes', files: files.map(file => file.path) }] : []
     }
     case 'clean': {
       const dry = await git(Cmd.cleanDryRun({ dirs: risk.dirs, ignored: risk.ignored }, risk.paths), at)
       const doomed = dry.stdout.split('\n').map(line => line.replace(/^Would remove /, '').trim()).filter(Boolean)
 
-      return doomed.length ? [`${plural(doomed.length, 'fichier non suivi supprimé', 'fichiers non suivis supprimés')}, sans copie possible : ${fileList(doomed.map(path => ({ path })))}`] : []
+      return doomed.length ? [{ kind: 'untracked', files: doomed }] : []
     }
     case 'stash-drop':
     case 'stash-clear': {
@@ -304,48 +325,78 @@ export async function consequences(git: GitRunner, risk: Risk, context: Context)
       const entries = list.stdout.split('\n').filter(Boolean).map(line => line.split(FIELD))
       const lost = risk.kind === 'stash-clear' ? entries : entries.filter(([name]) => name === risk.which || `stash@{${risk.which}}` === name)
 
-      return lost.length ? [`${plural(lost.length, 'stash perdu', 'stashs perdus')} : ${lost.slice(0, 2).map(([name, text]) => `${name} ${text ?? ''}`.trim()).join(' · ')}`] : []
+      return lost.length ? [{ kind: 'stashes', stashes: lost.map(([name, text]) => `${name} ${text ?? ''}`.trim()) }] : []
     }
     case 'force-push': {
       const remote = risk.remote ?? 'origin'
       const specs = risk.refspecs.length ? risk.refspecs : context.branch ? [context.branch] : []
-      const lines: string[] = []
+      const losses: Loss[] = []
 
       for (const spec of specs.slice(0, 3)) {
         const [source = '', target = source] = spec.split(':')
         const branch = target.replace(/^refs\/heads\//, '')
         const lost = await commitsOnly(git, context.toplevel, [`refs/remotes/${remote}/${branch}`, '--not', source || 'HEAD'])
 
-        if (lost) lines.push(`${remote}/${branch} perd ${lost}`)
+        if (lost) losses.push({ kind: 'remote-loses', remote, branch, commits: lost })
       }
 
-      return lines.length ? lines : [`réécrit ${specs.map(spec => `${remote}/${spec.split(':').pop()}`).join(', ') || 'la branche distante'} (état distant non vérifié)`]
+      return losses.length ? losses : [{ kind: 'remote-rewritten', targets: specs.map(spec => `${remote}/${spec.split(':').pop()}`) }]
     }
     case 'push-delete': {
       const remote = risk.remote ?? 'origin'
-      const lines: string[] = []
+      const losses: Loss[] = []
 
       for (const branch of risk.branches.slice(0, 3)) {
         const lost = await commitsOnly(git, context.toplevel, [`refs/remotes/${remote}/${branch}`, '--not', ...others(`${remote}/${branch}`, 'remotes'), '--branches', '--tags'])
 
-        lines.push(`supprime ${remote}/${branch}${lost ? ` : ${lost} n’existent que là` : ''}`)
+        losses.push({ kind: 'remote-deleted', remote, branch, commits: lost })
       }
 
-      return lines
+      return losses
     }
     case 'branch-delete': {
-      const lines: string[] = []
+      const losses: Loss[] = []
 
       for (const branch of risk.branches.slice(0, 3)) {
         const lost = await commitsOnly(git, context.toplevel, [`refs/heads/${branch}`, '--not', ...others(branch, 'branches'), '--remotes', '--tags'])
 
-        if (lost) lines.push(`${branch} : ${lost} n’existent que sur elle`)
+        if (lost) losses.push({ kind: 'branch-only', branch, commits: lost })
       }
 
-      return lines
+      return losses
     }
     case 'other':
-      return [risk.what]
+      return [{ kind: 'other', what: risk.what, ...(risk.ref !== undefined ? { ref: risk.ref } : {}) }]
+  }
+}
+
+/** A loss in plain words, one line, in the language of `m`. */
+export function lossText(loss: Loss, m: Messages = t()): string {
+  const said = m.loss
+
+  switch (loss.kind) {
+    case 'orphaned':
+      return said.orphaned(said.commits(loss.commits))
+    case 'changes':
+      return said.changes(loss.files)
+    case 'untracked':
+      return said.untracked(loss.files)
+    case 'stashes':
+      return said.stashes(loss.stashes)
+    case 'remote-loses':
+      return said.remoteLoses(loss.remote, loss.branch, said.commits(loss.commits))
+    case 'remote-rewritten':
+      return said.remoteRewritten(loss.targets)
+    case 'remote-deleted':
+      return said.remoteDeleted(loss.remote, loss.branch, loss.commits ? said.commits(loss.commits) : null)
+    case 'branch-only':
+      return said.branchOnly(loss.branch, said.commits(loss.commits))
+    case 'other':
+      return loss.what === 'rewrite' ? said.rewrite : loss.what === 'reflog' ? said.reflog : loss.what === 'prune' ? said.prune : said.deleteRef(loss.ref ?? '')
+    case 'elsewhere':
+      return said.elsewhere(loss.command)
+    case 'unchecked':
+      return said.unchecked(loss.command)
   }
 }
 

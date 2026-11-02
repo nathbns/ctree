@@ -1,10 +1,11 @@
-// The three changes the pane can make (switch branch, create a tag, push),
-// each built as the exact git command it runs and the words its confirmation
-// shows, and the guard that admits those shapes and no other write.
+// The changes the pane can make (switch branch, create a tag, push, apply a
+// stash), each built as the exact git command it runs and the words its
+// confirmation shows, and the guard that admits those shapes and no other write.
 
 import * as Cmd from './git-commands'
 import { FIELD } from './git-commands'
 import { parseLog } from './git-parse'
+import { messages, NOTES, t } from './i18n'
 import type { Commit, GitRunner, RepoSnapshot, Stash } from './types'
 
 /** A change ready to confirm: what runs, and what the pane and Claude are told. */
@@ -56,19 +57,20 @@ export function switchTargets(snapshot: RepoSnapshot, hash: string): SwitchTarge
 }
 
 export function switchAction(snapshot: RepoSnapshot, target: SwitchTarget): Action {
+  const m = t().action
   const dirty = snapshot.status.length
-  const kept = dirty > 0 ? [`${plural(dirty, 'modification non commitée', 'modifications non commitées')} : git les garde si possible, sinon il refuse.`] : []
+  const kept = dirty > 0 ? [m.kept(dirty)] : []
 
   switch (target.kind) {
     case 'branch':
       return {
         kind: 'switch',
         args: ['switch', target.branch],
-        title: `⎇ Passer sur ${target.branch}`,
+        title: m.switchTitle(target.branch),
         details: kept,
-        confirm: 'basculer',
-        success: `✓ Sur ${target.branch}`,
-        note: `[ctree] Via le panneau, la personne est passée sur la branche ${target.branch} (git switch ${target.branch}).`,
+        confirm: m.switchConfirm,
+        success: m.switched(target.branch),
+        note: NOTES.switched(target.branch),
       }
     case 'track': {
       const branch = branchOf(target.remote)
@@ -76,11 +78,11 @@ export function switchAction(snapshot: RepoSnapshot, target: SwitchTarget): Acti
       return {
         kind: 'switch',
         args: ['switch', '--track', target.remote],
-        title: `⎇ Créer ${branch} depuis ${target.remote} et passer dessus`,
-        details: [`nouvelle branche locale ${branch}, qui suit ${target.remote}`, ...kept],
-        confirm: 'créer et basculer',
-        success: `✓ Sur ${branch} (suit ${target.remote})`,
-        note: `[ctree] Via le panneau, la personne a créé la branche ${branch} depuis ${target.remote} et est passée dessus (git switch --track ${target.remote}).`,
+        title: m.trackTitle(branch, target.remote),
+        details: [m.trackDetail(branch, target.remote), ...kept],
+        confirm: m.trackConfirm,
+        success: m.tracked(branch, target.remote),
+        note: NOTES.tracked(branch, target.remote),
       }
     }
     case 'detach': {
@@ -89,11 +91,11 @@ export function switchAction(snapshot: RepoSnapshot, target: SwitchTarget): Acti
       return {
         kind: 'switch',
         args: ['switch', '--detach', target.hash],
-        title: `⎇ Détacher HEAD sur ${short}`,
-        details: ['HEAD détachée : un commit fait ici n’appartiendra à aucune branche.', ...kept],
-        confirm: 'détacher',
-        success: `✓ HEAD détachée sur ${short}`,
-        note: `[ctree] Via le panneau, la personne a détaché HEAD sur ${short} (git switch --detach ${short}).`,
+        title: m.detachTitle(short),
+        details: [m.detachDetail, ...kept],
+        confirm: m.detachConfirm,
+        success: m.detached(short),
+        note: NOTES.detached(short),
       }
     }
   }
@@ -101,29 +103,26 @@ export function switchAction(snapshot: RepoSnapshot, target: SwitchTarget): Acti
 
 /** A stash's changes put back in the working tree, the stash kept (`apply`, never `pop`). */
 export function applyStashAction(stash: Stash, dirty: number): Action {
-  const short = stash.hash.slice(0, 7)
+  const m = t().action
 
   return {
     kind: 'stash',
     args: ['stash', 'apply', stash.hash],
-    title: `≡ Appliquer ${stash.selector} « ${stash.subject} »`,
-    details: [
-      'ses modifications reviennent dans l’arbre de travail ; le stash reste dans la liste',
-      ...(dirty > 0 ? [`${plural(dirty, 'modification non commitée', 'modifications non commitées')} : git refuse s’il devait les écraser`] : []),
-    ],
-    confirm: 'appliquer',
-    success: `✓ ${stash.selector} appliqué`,
-    note:
-      `[ctree] Via le panneau, la personne a appliqué le stash ${stash.selector} « ${stash.subject} » ` +
-      `(git stash apply ${short}) : ses modifications sont maintenant dans l’arbre de travail, le stash est gardé.`,
+    title: m.stashTitle(stash.selector, stash.subject),
+    details: [m.stashDetail, ...(dirty > 0 ? [m.stashDirty(dirty)] : [])],
+    confirm: m.stashConfirm,
+    success: m.stashed(stash.selector),
+    note: NOTES.stashApplied(stash.selector, stash.subject, stash.hash.slice(0, 7)),
   }
 }
 
 /** Why `name` cannot be a new tag, or null when it can. */
 export function tagNameError(name: string, existing: readonly string[]): string | null {
-  if (name.trim() === '') return 'donne un nom au tag'
-  if (existing.includes(name)) return `le tag ${name} existe déjà`
-  if (!isSafeRefName(name)) return 'nom refusé par git : ni espace, ni .. ~ ^ : ? * [ \\, ni - ou . au début'
+  const m = t().action
+
+  if (name.trim() === '') return m.tagNoName
+  if (existing.includes(name)) return m.tagTaken(name)
+  if (!isSafeRefName(name)) return m.tagBadName
 
   return null
 }
@@ -148,17 +147,18 @@ export function nextVersion(tags: readonly string[]): string {
 
 /** An annotated tag, so that the next push takes it along (`--follow-tags`). */
 export function tagAction(commit: Commit, name: string, message: string): Action {
+  const m = t().action
   const short = commit.hash.slice(0, 7)
   const text = message.trim() || name
 
   return {
     kind: 'tag',
     args: ['tag', '-a', name, '-m', text, commit.hash],
-    title: `◇ Créer le tag ${name} sur ${short}`,
-    details: [`« ${commit.subject} »`, 'tag annoté : il partira avec le prochain push'],
-    confirm: 'créer',
-    success: `✓ Tag ${name} créé sur ${short}`,
-    note: `[ctree] Via le panneau, la personne a créé le tag annoté ${name} sur ${short} « ${commit.subject} ».`,
+    title: m.tagTitle(name, short),
+    details: [m.tagSubject(commit.subject), m.tagDetail],
+    confirm: m.tagConfirm,
+    success: m.tagged(name, short),
+    note: NOTES.tagged(name, short, commit.subject),
   }
 }
 
@@ -178,30 +178,31 @@ export async function planPush(
   snapshot: RepoSnapshot,
   env: Readonly<Record<string, string>> = {},
 ): Promise<PushPlan> {
+  const m = t().push
   const head = snapshot.head
   const at = { cwd: snapshot.repo.toplevel }
-  const blocked = (reason: string, title = '↑ Push impossible'): PushPlan => ({ kind: 'blocked', title, reason })
+  const blocked = (reason: string, title = m.cannot): PushPlan => ({ kind: 'blocked', title, reason })
 
-  if (head.kind === 'detached') return blocked('HEAD détachée : aucune branche à pousser.')
-  if (head.hash === null) return blocked('Aucun commit à pousser.')
+  if (head.kind === 'detached') return blocked(m.detached)
+  if (head.hash === null) return blocked(m.noCommit)
 
   const branch = snapshot.refs.find(ref => ref.kind === 'branch' && ref.name === head.branch)
   const listed = await git(Cmd.remotes(), at)
   const remotes = listed.code === 0 ? listed.stdout.split('\n').map(line => line.trim()).filter(Boolean) : []
 
-  if (remotes.length === 0) return blocked('Aucun dépôt distant : ajoute-en un avec git remote add.')
+  if (remotes.length === 0) return blocked(m.noRemote)
 
   const upstream = branch?.upstream && !branch.isUpstreamGone ? branch.upstream : null
   const remote = upstream
     ? remotes.filter(name => upstream.startsWith(`${name}/`)).sort((a, b) => b.length - a.length)[0]
     : remotes.includes('origin') ? 'origin' : remotes[0]
 
-  if (!remote) return blocked(`${head.branch} suit ${upstream}, qui n’est pas une branche distante.`)
+  if (!remote) return blocked(m.notRemote(head.branch, upstream ?? ''))
 
   const behind = branch?.track?.[1] ?? 0
 
   if (upstream && behind > 0) {
-    return blocked(`${upstream} a ${plural(behind, 'commit', 'commits')} que tu n’as pas : récupère-les d’abord (pas de push forcé).`)
+    return blocked(m.behind(upstream, behind))
   }
 
   const remoteBranch = upstream ? upstream.slice(remote.length + 1) : head.branch
@@ -212,7 +213,7 @@ export async function planPush(
   ])
 
   if (remoteTags.code !== 0) {
-    return blocked(`${remote} injoignable : ${firstLine(remoteTags.stderr) || 'git ls-remote a échoué'}`)
+    return blocked(m.unreachable(remote, firstLine(remoteTags.stderr) || m.lsRemoteFailed))
   }
 
   const there = new Set(
@@ -226,12 +227,10 @@ export async function planPush(
   const outgoing = parseLog(commits.stdout)
 
   if (upstream && outgoing.length === 0 && tags.length === 0) {
-    return blocked(`Rien à pousser : ${upstream} est à jour.`, '↑ Déjà à jour')
+    return blocked(m.upToDate(upstream), m.upToDateTitle)
   }
 
   const refspec = remoteBranch === head.branch ? head.branch : `${head.branch}:refs/heads/${remoteBranch}`
-  const count =
-    outgoing.length > 50 ? 'plus de 50 commits' : outgoing.length === 0 ? 'aucun commit' : plural(outgoing.length, 'commit', 'commits')
   const shown = outgoing.slice(0, 3).map(commit => `${commit.hash.slice(0, 7)} ${commit.subject}`)
 
   return {
@@ -239,15 +238,15 @@ export async function planPush(
     action: {
       kind: 'push',
       args: ['push', '--follow-tags', ...(upstream ? [] : ['-u']), remote, refspec],
-      title: `↑ Pousser ${head.branch} vers ${remote}/${remoteBranch}`,
+      title: m.title(head.branch, remote, remoteBranch),
       details: [
-        ...(upstream ? [] : [`crée ${remote}/${remoteBranch} et la suit (-u)`]),
-        `${count}${shown.length ? ' : ' : ''}${shown.join(' · ')}`,
-        ...(tags.length ? [`${plural(tags.length, 'tag', 'tags')} : ${tags.join(', ')}`] : []),
+        ...(upstream ? [] : [m.creates(remote, remoteBranch)]),
+        m.commits(m.count(outgoing.length), shown),
+        ...(tags.length ? [m.tags(tags)] : []),
       ],
-      confirm: 'pousser',
-      success: `✓ Poussé : ${head.branch} → ${remote}/${remoteBranch}`,
-      note: `[ctree] Via le panneau, la personne a poussé ${head.branch} vers ${remote}/${remoteBranch} (${count}${tags.length ? `, tags ${tags.join(', ')}` : ''}).`,
+      confirm: m.confirm,
+      success: m.pushed(head.branch, remote, remoteBranch),
+      note: NOTES.pushed(head.branch, remote, remoteBranch, messages('en').push.count(outgoing.length), tags),
     },
   }
 }
@@ -340,10 +339,6 @@ export function displayCommand(args: readonly string[]): string {
 
 function branchOf(remoteRef: string): string {
   return remoteRef.slice(remoteRef.indexOf('/') + 1)
-}
-
-function plural(count: number, one: string, many: string): string {
-  return `${count} ${count > 1 ? many : one}`
 }
 
 function firstLine(text: string): string {

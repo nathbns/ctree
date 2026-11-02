@@ -1,262 +1,276 @@
 # ctree
 
-Un mod Claude Code qui affiche le graphe git du dépôt dans un panneau à côté de la conversation, au plus près du graphe Source Control de VS Code et de l'extension Git Graph. Il suit en direct les commandes git que Claude lance, et marque d'un `✦` les commits créés pendant la session. Il lit git, et n'écrit que ce que tu confirmes : changer de branche, créer un tag, pousser, appliquer un stash, annuler une commande de claude.
+**/rewind brings back your files. ctree brings back your git.**
+
+English · [Français](README.fr.md)
+
+A Claude Code mod that shows the repository's git graph in a pane beside the conversation, as close as it gets to VS Code's Source Control graph and the Git Graph extension. It follows the git commands Claude runs live, and marks with a `✦` the commits made during the session. It reads git, and writes only what you confirm: switching branch, creating a tag, pushing, applying a stash, undoing one of Claude's commands.
+
 ```
 demo · ⎇ main · ✓ origin/main
-  ◌     Modifications non commitées (2)
-  ┊ ●   Panneau : colonnes adaptatives          feature/ui  Nathan          2 h  ed58ff3
-  ┊ ●   Navigation j/k                                      Nathan          1 j  63622de
-❯ ◉─┼─╮ Merge branch 'feature/la…  main ⇄ origin  ◇ v0.2.0  Nathan          5 h  a2e6115
+  ◌     Uncommitted changes (2)
+  ┊ ●   Pane: adaptive columns                  feature/ui  Nathan           2h  ed58ff3
+  ┊ ●   j/k navigation                                      Nathan           1d  63622de
+❯ ◉─┼─╮ Merge branch 'feature/la…  main ⇄ origin  ◇ v0.2.0  Nathan           5h  a2e6115
   │ │ │   A lanes.txt                                                                 +2
-  │ │ ● Calcul des lanes : octopus m… origin/feature/lanes  Léa             6 h  42cccc5
-  ●─╯ │ Étiquettes de branches                              Nathan          2 j  57c5586
-  ●───╯ Parsing de git log                        ◇ v0.1.0  Nathan          3 j  deeed04
-j: ↓ k: ↑ ⏎ g: cherch. e: expl. d: comp. m: marq. c: br. p: push u: ⟲ v: vue h: aide
+  │ │ ● Lane layout: octopus merge  origin/feature/lanes  Léa              6h  42cccc5
+  ●─╯ │ Branch labels                                       Nathan           2d  57c5586
+  ●───╯ Parse git log                             ◇ v0.1.0  Nathan           3d  deeed04
+j: ↓ k: ↑ ⏎ g: find e: expl. d: comp. m: mark c: br. p: push u: ⟲ v: view h: help
 ```
 
-## Installer
+## Install
 
-Au prompt d'une session Claude Code, dans un terminal :
+At the prompt of a Claude Code session, in a terminal:
 
 ```
 /plugin install ctree --marketplace nathbns/ctree
 ```
 
-`y` pour ajouter le marketplace, puis Entrée pour la portée (utilisateur : ctree est là dans toutes tes sessions). Il est actif tout de suite.
+`y` to add the marketplace, then Enter for the scope (user: ctree is there in all your sessions). It is active right away.
 
-Depuis un shell : `claude plugin install ctree --marketplace nathbns/ctree`. Dans l'application de bureau : + à côté du prompt, Plugins, Add marketplace avec `nathbns/ctree`, puis Add plugin.
+From a shell: `claude plugin install ctree --marketplace nathbns/ctree`. In the desktop app: + next to the prompt, Plugins, Add marketplace with `nathbns/ctree`, then Add plugin.
 
-Pour l'essayer sans l'installer, ou pour le développer :
+To try it without installing it, or to work on it:
 
 ```sh
-git clone git@github.com:nathbns/ctree.git ~/ctree
-cd ton-projet
+git clone https://github.com/nathbns/ctree.git ~/ctree
+cd your-project
 claude --plugin-dir ~/ctree
 ```
 
-Puis `/ctree` au prompt.
+Then `/ctree` at the prompt.
 
-- **En mode plein écran** (terminal d'au moins 110 colonnes), le panneau s'ancre à côté de la conversation. Il demande toute la largeur permise : Claude Code la plafonne à 45 % du terminal. Si tu l'as rétréci un jour, Claude Code garde ta largeur ; **Ctrl+X puis ←** l'élargit à nouveau.
-- **`z` passe en pleine largeur** : ctree quitte le panneau et s'affiche dans la bande au-dessus du prompt, sur toute la largeur du terminal (jusqu'à la moitié de sa hauteur), avec messages complets, noms de branches entiers et toutes les colonnes.
-  - Ctrl+X Tab, ou un clic, lui donne le clavier.
-  - `z` à nouveau revient au panneau.
-  - Le choix est retenu : `/ctree` rouvre là où tu l'as laissé.
-- **Sinon**, il s'ouvre au-dessus du prompt, aussi haut que la place le permet. `/tui fullscreen` passe en plein écran.
+- **In fullscreen mode** (a terminal of at least 110 columns), the pane docks beside the conversation. It asks for all the width it may have: Claude Code caps it at 45% of the terminal. If you narrowed it once, Claude Code keeps your width; **Ctrl+X then ←** widens it again.
+- **`z` goes full width**: ctree leaves the pane and draws in the band above the prompt, across the whole terminal (up to half its height), with whole messages, whole branch names and every column.
+  - Ctrl+X Tab, or a click, gives it the keyboard.
+  - `z` again goes back to the pane.
+  - The choice is kept: `/ctree` opens where you left it.
+- **Otherwise**, it opens above the prompt, as tall as there is room. `/tui fullscreen` switches to fullscreen.
 
-## Touches
+## Language
 
-| Touche | Effet |
+ctree speaks English and French. The `language` option picks one (`/plugin configure ctree@ctree` once installed; with `--plugin-dir`, `pluginConfigs` → `ctree@inline` → `language`):
+
+- `auto` (the default): Claude Code's own `language` setting when it has one (`"language": "french"`), else the system locale (`LC_ALL`, then `LC_MESSAGES`, then `LANG`). English unless French.
+- `en` or `fr`: that language, whatever the rest.
+
+The keys are the same in both languages. The notes ctree leaves for Claude (after an action or an undo) and the reasons it gives Claude when you refuse a command are always in English.
+
+## Keys
+
+| Key | What it does |
 | --- | --- |
-| `j` / `k`, `↓` / `↑` | ligne suivante / précédente (la suite de l'historique se charge en descendant) |
-| `Entrée` | sur un commit : déplie ses fichiers ; sur un fichier : affiche son diff |
-| `g` | cherche dans le message, l'auteur, le hash ou les fichiers ; `n` passe au résultat suivant |
-| `i` | revient à HEAD |
-| `m` | marque le commit sélectionné ; `d` sur un autre les compare |
-| `d` | compare le commit sélectionné avec la marque (sans marque : avec HEAD) |
-| `y` | copie le hash complet |
-| `a` | applique le stash sélectionné (après confirmation) |
-| `h` | aide : toutes les touches et la légende du graphe |
-| `v` | vue d'ensemble : replie les suites linéaires (Entrée en ouvre une) ; `v` à nouveau pour tout voir |
-| `f` | focus : l'historique de la branche sélectionnée, puis sa seule ligne (premier parent), puis toutes les branches |
-| `e` | prépare dans le prompt une question pour que Claude explique le commit (ou le fichier) sélectionné, sans l'envoyer |
-| `c` | change de branche : celle du commit sélectionné (au choix s'il en porte plusieurs) |
-| `t` | crée un tag annoté sur le commit sélectionné |
-| `p` | pousse la branche courante |
-| `u` | annule la dernière commande git de Claude (après confirmation) |
-| `l` | journal des commandes git de Claude ; Entrée sur une entrée l'annule |
-| `s` | vue session : ce que cette conversation a changé ; `e` y demande une description de PR |
-| `z` | pleine largeur au-dessus du prompt, ou retour au panneau (le choix est retenu) |
-| `r` | recharge le dépôt |
-| `q` | ferme le panneau ; dans une autre vue (diff, comparaison, résultats, journal, session, aide), revient en arrière |
-| `Échap` | ferme le panneau ; annule une action en attente ; dans une autre vue, revient en arrière ; efface la recherche en cours ; juste après `e`, rend la main au prompt sans fermer |
+| `j` / `k`, `↓` / `↑` | next / previous row (the rest of the history loads as you go down) |
+| `Enter` | on a commit: unfolds its files; on a file: shows its diff |
+| `g` | searches the message, the author, the hash or the files; `n` goes to the next result |
+| `i` | back to HEAD |
+| `m` | marks the selected commit; `d` on another compares them |
+| `d` | compares the selected commit with the mark (no mark: with HEAD) |
+| `y` | copies the full hash |
+| `a` | applies the selected stash (once confirmed) |
+| `h` | help: every key, and what the graph's marks mean |
+| `v` | overview: folds linear runs (Enter opens one); `v` again to see everything |
+| `f` | focus: the selected branch's history, then its own line (first parent), then every branch |
+| `e` | puts a question in the prompt for Claude to explain the selected commit (or file), without sending it |
+| `c` | switches branch: to the selected commit's (a choice when it has several) |
+| `t` | creates an annotated tag on the selected commit |
+| `p` | pushes the current branch |
+| `u` | undoes Claude's last git command (once confirmed) |
+| `l` | journal of Claude's git commands; Enter on an entry undoes it |
+| `s` | session view: what this conversation changed; `e` there drafts a PR description |
+| `z` | full width above the prompt, or back to the pane (the choice is kept) |
+| `r` | reloads the repository |
+| `q` | closes the pane; in another view (diff, comparison, results, journal, session, help), goes back |
+| `Esc` | closes the pane; cancels a change waiting; in another view, goes back; clears the current search; right after `e`, hands the keys back to the prompt without closing |
 
-Le bas du panneau montre les touches les plus utilisées, autant que la largeur en permet, et toujours `h: aide`. Les autres marchent aussi : `h` les liste toutes. La molette et Page↑/Page↓ font défiler la liste. Dans VS Code, il n'y a pas de raccourcis clavier : on clique sur les lignes et les boutons.
+The bottom of the pane shows the most used keys, as many as the width allows, and always `h: help`. The others work too: `h` lists them all. The wheel and Page↑/Page↓ scroll the list. In VS Code there are no keyboard shortcuts: you click the rows and the buttons.
 
-## Ce qui est affiché
+## What it shows
 
-- **Graphe** : une ligne par commit, en caractères de dessin de boîte (`│ ─ ╮ ╯ ├ ┼ …`).
-  - Nœuds : `●` commit, `○` merge, `◉` HEAD, `◌` modifications non commitées, reliées à HEAD en pointillés `┊`.
-  - Couleurs : une par branche, stable (dérivée du nom), le bleu étant réservé à la branche courante. La palette est celle du graphe de VS Code.
-- **Étiquettes** :
-  - branche courante en pastille pleine ;
-  - `main ⇄ origin` quand la branche locale et sa distante pointent sur le même commit ;
-  - branches distantes seules en italique, tags `◇ v1.0`, `HEAD détachée` ;
-  - `(wt)` pour une branche extraite dans un autre worktree.
-- **Colonnes** : message, étiquettes, auteur, date relative, hash court. L'auteur disparaît sous 84 colonnes, le hash sous 72, la date sous 60.
-- **Fichiers d'un commit** : comparés à son premier parent (comme VS Code pour un merge), avec statut M/A/D/R et le nombre de lignes +/−.
-- **Stashs** : `≡ stash@{0}`, sur le commit où ils ont été faits, à leur date, comme dans Git Graph. Entrée liste leurs fichiers, `e` demande à Claude ce qu'ils contiennent, `a` en applique un (`git stash apply`, le stash reste dans la liste).
+- **Graph**: one row per commit, in box-drawing characters (`│ ─ ╮ ╯ ├ ┼ …`).
+  - Nodes: `●` commit, `○` merge, `◉` HEAD, `◌` uncommitted changes, linked to HEAD by a dotted `┊`.
+  - Colours: one per branch, stable (derived from its name), blue kept for the current branch. The palette is VS Code's graph's.
+- **Labels**:
+  - the current branch as a filled chip;
+  - `main ⇄ origin` when the local branch and its remote point at the same commit;
+  - remote-only branches in italics, tags `◇ v1.0`, `detached HEAD`;
+  - `(wt)` for a branch checked out in another worktree.
+- **Columns**: message, labels, author, relative date (`2h`, `1d`, `3w`), short hash. The author goes under 84 columns, the hash under 72, the date under 60.
+- **A commit's files**: against its first parent (as VS Code does for a merge), with their M/A/D/R status and the +/− line counts.
+- **Stashes**: `≡ stash@{0}`, on the commit they were made on, at their date, as Git Graph draws them. Enter lists their files, `e` asks Claude what they hold, `a` applies one (`git stash apply`: the stash stays in the list).
 
-## Voir tout le graphe
+## Seeing the whole graph
 
-- **Chaque ligne prend la largeur de son propre graphe**, comme dans VS Code, lazygit ou tig. Une branche qui s'écarte loin à droite ne vole plus la place des messages des autres lignes.
-- **`v`, vue d'ensemble.** Ne restent que les commits qui donnent sa forme à l'historique : pointes de branches, tags, HEAD, merges, bifurcations, racines et commits `✦` de la session. Chaque suite linéaire devient une ligne `┆ ▸ 22 commits · Léa, Nathan`. Sur express, un écran couvre ainsi 9 mois au lieu de 2 semaines.
-  - La suite de l'historique se charge d'elle-même jusqu'à remplir le panneau.
-  - Entrée ouvre une suite repliée ; `e` sur une suite repliée demande à Claude d'expliquer l'ensemble.
-- **`f`, focus.** Trois crans, l'en-tête indiquant lequel est actif (`◎ main`, `◎ main · 1er parent`) :
-  1. l'historique de la branche (ou du tag, ou du commit) sélectionnée ;
-  2. sa seule ligne, au premier parent, les merges restant des `○` ;
-  3. toutes les branches.
+- **Each row takes the width of its own graph**, as in VS Code, lazygit or tig. A branch that strays far to the right no longer steals the room of the other rows' messages.
+- **`v`, overview.** Only the commits that give the history its shape stay: branch tips, tags, HEAD, merges, forks, roots and the session's `✦` commits. Each linear run becomes one row, `┆ ▸ 22 commits · Léa, Nathan`. On express, one screen covers 9 months instead of 2 weeks.
+  - The rest of the history loads by itself until the pane is full.
+  - Enter opens a folded run; `e` on a folded run asks Claude to explain all of it.
+- **`f`, focus.** Three steps, the header saying which is on (`◎ main`, `◎ main · first parent`):
+  1. the selected branch's (or tag's, or commit's) history;
+  2. its own line, by first parents, the merges still drawn `○`;
+  3. every branch.
 
-  Combiné à `v`, cela donne les versions d'un projet sur plusieurs années en un écran.
-- **Écarts avec la distante** : une branche à un autre commit que sa distante l'indique dans son étiquette, par exemple `main ↑2 ↓1`.
+  With `v`, that gives a project's releases over several years on one screen.
+- **Drift from the remote**: a branch at another commit than its remote says so in its label, for instance `main ↑2 ↓1`.
 
-## Chercher et comparer
+## Search and compare
 
-- **`g`, chercher.** Un champ s'ouvre ; Entrée cherche dans tout l'historique dessiné (toutes les branches, ou celle du focus), majuscules ignorées :
-  - dans le message et l'auteur, toujours ;
-  - dans les chemins des fichiers changés, quand le texte ressemble à un chemin (`src/lanes.ts`, `lanes.`, `docs/`) ;
-  - un hash, quand le texte peut en être un ;
-  - dans les stashs.
+- **`g`, search.** A field opens; Enter searches the whole history drawn (every branch, or the focused one's), case ignored:
+  - in the message and the author, always;
+  - in the paths of the files changed, when the text looks like a path (`src/lanes.ts`, `lanes.`, `docs/`);
+  - a hash, when the text could be one;
+  - in the stashes.
 
-  Les résultats s'affichent du plus récent au plus ancien, avec ce qui correspond (`message · fichier`). Entrée sur l'un d'eux le sélectionne dans le graphe, même loin dans l'historique : ctree charge jusqu'à lui (5 000 commits au plus), et au-delà le montre en focus. Les commits trouvés ressortent en jaune, l'en-tête dit `⌕ « proxy » 5/36`, `n` passe au suivant, Échap efface la recherche. Une recherche trop longue (15 s) est arrêtée, et la liste le dit.
-- **`m` puis `d`, comparer.** `m` marque un commit (`⚑`), `d` sur un autre ouvre la comparaison, du plus ancien au plus récent :
+  The results come newest first, with what matched (`message · file`). Enter on one selects it in the graph, even far back in the history: ctree loads up to it (5,000 commits at most), and past that shows it in focus. The commits found stand out in yellow, the header says `⌕ "proxy" 5/36`, `n` goes to the next, Esc clears the search. A search that takes too long (15 s) is stopped, and the list says so.
+- **`m` then `d`, compare.** `m` marks a commit (`⚑`), `d` on another opens the comparison, from the older to the newer:
 
   ```
-  ⇄ fc138c1 « deps: proxy-addr@~2.0.6 » → 1c6f1b0 « test: expand coverage… »
-    1c6f1b0 a 565 commits de plus · 170 fichiers +7305 −5908
+  ⇄ fc138c1 "deps: proxy-addr@~2.0.6" → 1c6f1b0 "test: expand coverage…"
+    1c6f1b0 has 565 more commits · 170 files +7305 −5908
     M .editorconfig  +1 −1
   ```
 
-  Entrée sur un fichier montre son diff entre les deux, Échap revient à la liste des fichiers, `e` demande à Claude ce qui a changé. Sans marque, `d` compare avec HEAD ; sur la ligne des modifications non commitées, il compare l'arbre de travail.
-- **`y`** copie le hash complet du commit sélectionné, **`i`** revient à HEAD.
+  Enter on a file shows its diff between the two, Esc goes back to the list of files, `e` asks Claude what changed. With no mark, `d` compares with HEAD; on the row of uncommitted changes, it compares the working tree.
+- **`y`** copies the selected commit's full hash, **`i`** goes back to HEAD.
 
-## Changer de branche, tagger, pousser
+## Switch branch, tag, push
 
-Rien ne s'écrit sans confirmation. `c`, `t` et `p` ouvrent un bandeau en bas du panneau, à la place des touches. Il montre la commande exacte et ce qu'elle va faire ; `y` lance, `n` ou `Échap` annule.
+Nothing is written without your confirmation. `c`, `t` and `p` open a band at the bottom of the pane, in place of the keys. It shows the exact command and what it will do; `y` runs it, `n` or `Esc` cancels.
 
 ```
- ↑ Pousser feature/ui vers origin/feature/ui
+ ↑ Push feature/ui to origin/feature/ui
    git push --follow-tags -u origin feature/ui
-   crée origin/feature/ui et la suit (-u)
-   2 commits : ed58ff3 Panneau : colonnes adaptatives · 63622de Navigation j/k
-   2 tags : v0.1.0, v0.3.0-rc1
- y: pousser  n: annuler
+   creates origin/feature/ui and tracks it (-u)
+   2 commits: ed58ff3 Pane: adaptive columns · 63622de j/k navigation
+   2 tags: v0.1.0, v0.3.0-rc1
+ y: push  n: cancel
 ```
 
-- **`c`, changer de branche :** `git switch <branche>`.
-  - Une branche seulement distante est créée en local, en la suivant (`git switch --track`).
-  - Un commit sans branche détache HEAD, avec un avertissement.
-  - Les modifications non commitées sont gardées si git le peut ; sinon git refuse, et son message s'affiche.
-- **`t`, créer un tag :** `git tag -a <nom> -m <message> <commit>`.
-  - Le nom proposé est la version suivante (`v0.2.0` donne `v0.3.0`).
-  - Un nom déjà pris ou invalide est refusé avant la confirmation.
-  - Le tag est annoté, pour partir avec le push suivant.
-- **`p`, pousser :** `git push --follow-tags origin <branche>`.
-  - Ajoute `-u` si la branche n'a pas encore de distante.
-  - La confirmation liste les commits et les tags annotés qui partiront (le dépôt distant est interrogé pour ses tags).
-  - Jamais de push forcé : une branche en retard sur sa distante est bloquée, avec l'explication.
+- **`c`, switch branch:** `git switch <branch>`.
+  - A remote-only branch is created locally, tracking it (`git switch --track`).
+  - A commit with no branch detaches HEAD, with a warning.
+  - Uncommitted changes are kept when git can; otherwise git refuses, and its message is shown.
+- **`t`, create a tag:** `git tag -a <name> -m <message> <commit>`.
+  - The name offered is the next version (`v0.2.0` gives `v0.3.0`).
+  - A name already taken or invalid is refused before the confirmation.
+  - The tag is annotated, so it goes with the next push.
+- **`p`, push:** `git push --follow-tags origin <branch>`.
+  - Adds `-u` when the branch has no remote yet.
+  - The confirmation lists the commits and the annotated tags that will go (the remote is asked for its tags).
+  - Never a force push: a branch behind its remote is blocked, with why.
 
-Après chaque action réussie, le graphe se recharge. Une note est ajoutée à la conversation pour Claude, que toi tu ne vois pas : Claude sait ainsi que la branche a changé sous ses pieds.
+After each change that succeeds, the graph reloads. A note is added to the conversation for Claude, which you do not see: Claude thus knows the branch changed under its feet.
 
-À savoir : les commandes passent par l'API des mods, qui lance git avec les hooks du dépôt désactivés. Un `pre-push` ou un `post-checkout` ne tournent donc pas pour ces actions. Pour ssh, git ne pose aucune question (`BatchMode`) : il échoue avec un message plutôt que de bloquer, sauf si tu as réglé ta propre commande ssh.
+Worth knowing: these commands go through the mods API, which runs git with the repository's hooks off. A `pre-push` or a `post-checkout` hook does not run for them. For ssh, git asks no question (`BatchMode`): it fails with a message rather than hang, unless you set your own ssh command.
 
-## Garde-fou, journal et annulation
+## Guard, journal and undo
 
-Ce que ctree peut faire, et que les outils hors de la session ne peuvent pas : il voit chaque commande git de Claude **avant** qu'elle parte.
+What ctree can do, and tools outside the session cannot: it sees each of Claude's git commands **before** it runs.
 
-**Le garde-fou.** Quand une commande de Claude perdrait du travail, elle attend ta réponse, même en mode auto. La question de Claude Code dit précisément ce qui partirait :
+**The guard.** When one of Claude's commands would lose work, it waits for your answer, even in auto mode. Claude Code's question says exactly what would go:
 
 ```
-Claude veut lancer « git reset --hard HEAD~2 ». 2 commits (1c6f1b0 test: … · 0dee2c5 docs: …)
-ne seront plus sur aucune branche ; 3 fichiers modifiés perdus : src/a.ts, src/b.ts, README.md.
-Laisser passer ?
+Claude wants to run "git reset --hard HEAD~2". 2 commits (1c6f1b0 test: … · 0dee2c5 docs: …)
+will no longer be on any branch; 3 changed files lost: src/a.ts, src/b.ts, README.md.
+Let it run?
 ```
 
-| Commande | Ce qui est calculé avant |
+| Command | What is worked out first |
 | --- | --- |
-| `reset --hard` | les commits qui ne seront plus sur aucune branche, les fichiers modifiés perdus |
-| `checkout -- …`, `checkout .`, `restore`, `switch -f` / `--discard-changes` | les fichiers modifiés perdus |
-| `clean -f` | les fichiers non suivis supprimés (via `git clean -n`), sans copie possible |
-| `stash drop` / `clear` | les stashs perdus |
-| `push --force` / `+refspec`, `push --delete` / `:branche` | les commits que la branche distante perdrait |
-| `branch -D` | les commits qui n'existent que sur cette branche |
-| `filter-branch`, `gc --prune=now`, `reflog expire`, `update-ref -d` | un avertissement |
+| `reset --hard` | the commits that will be on no branch any more, the changed files lost |
+| `checkout -- …`, `checkout .`, `restore`, `switch -f` / `--discard-changes` | the changed files lost |
+| `clean -f` | the untracked files deleted (through `git clean -n`), with no copy possible |
+| `stash drop` / `clear` | the stashes lost |
+| `push --force` / `+refspec`, `push --delete` / `:branch` | the commits the remote branch would lose |
+| `branch -D` | the commits only that branch holds |
+| `filter-branch`, `gc --prune=now`, `reflog expire`, `update-ref -d` | a warning |
 
-- **Si tu refuses**, la commande ne part pas. Claude lit pourquoi et te demande comment procéder.
-- **Si tu laisses passer** une commande qui jette des fichiers modifiés, ctree en garde d'abord une copie (`git stash create`, sans toucher à rien), récupérable depuis le journal.
-- **Les commandes qui ne perdent rien** (commit, rebase, merge, push normal…) ne sont jamais retenues : elles passent par le journal.
-- **Une commande lancée avec `git -C ailleurs`** est retenue avec un avertissement, sans calcul.
-- **Pour couper le garde-fou** : l'option `guard` (`/plugin configure ctree@ctree` une fois installé ; avec `--plugin-dir`, `pluginConfigs` → `ctree@inline` → `guard: false`). Il est actif par défaut.. Le garde-fou ne s'applique pas sans personne pour répondre (`claude -p`).
-- **En mode par défaut**, Claude Code peut encore demander sa propre permission après ta réponse.
+- **If you refuse**, the command does not run. Claude reads why and asks you how to go on.
+- **If you let it run** and it throws changed files away, ctree first keeps a copy of them (`git stash create`, touching nothing), which the journal can bring back.
+- **Commands that lose nothing** (commit, rebase, merge, a plain push…) are never held: they go in the journal.
+- **A command run with `git -C elsewhere`** is held with a warning, without working anything out.
+- **To turn the guard off**: the `guard` option (`/plugin configure ctree@ctree` once installed; with `--plugin-dir`, `pluginConfigs` → `ctree@inline` → `guard: false`). It is on by default. The guard does not apply when nobody is there to answer (`claude -p`).
+- **In default mode**, Claude Code may still ask its own permission after your answer.
 
-**Le journal (`l`).** Chaque commande git de Claude qui déplace une branche, un tag ou HEAD, ou qui jette des changements, y est inscrite : tour de conversation, commande, ce qui a bougé (`main a2e6115 → 8282214`).
+**The journal (`l`).** Each of Claude's git commands that moves a branch, a tag or HEAD, or throws changes away, goes in it: the conversation's turn, the command, what moved (`main a2e6115 → 8282214`).
 
-**Annuler (`u`, ou Entrée dans le journal).** La confirmation montre les commandes exactes, puis :
-- une branche créée est supprimée, une branche supprimée est refaite, HEAD revient sur sa branche d'avant ;
-- après un commit (ou `add` + `commit`, un amend), la branche revient avec `reset --soft` : les changements redeviennent non commités, comme avant ;
-- après un `reset --hard`, un merge ou un rebase, elle revient avec `reset --keep` : les fichiers sont remis, et git refuse s'il écraserait des changements locaux ;
-- si des fichiers modifiés avaient été jetés, une deuxième option les récupère aussi (`git stash apply`) ;
-- une branche qui a bougé depuis est laissée telle quelle, avec une note ;
-- un push n'est jamais annulé, car il faudrait un push forcé.
+**Undo (`u`, or Enter in the journal).** The confirmation shows the exact commands, then:
+- a branch created is deleted, a branch deleted is made again, HEAD goes back to its branch from before;
+- after a commit (or `add` + `commit`, an amend), the branch goes back with `reset --soft`: the changes are uncommitted again, as before;
+- after a `reset --hard`, a merge or a rebase, it goes back with `reset --keep`: the files are put back, and git refuses if it would overwrite local changes;
+- if changed files were thrown away, a second choice brings them back too (`git stash apply`);
+- a branch that moved since is left as it is, with a note;
+- a push is never undone, as that would take a force push.
 
-Claude reçoit une note : il sait que sa commande a été défaite.
+Claude gets a note: it knows its command was undone.
 
-**La vue session (`s`).** Ce que la conversation a changé depuis son début :
-- les branches et tags créés, supprimés ou déplacés, avec `+n −m` commits ;
-- les commits `✦` ;
-- les fichiers changés par HEAD, avec `+/−`.
+**The session view (`s`).** What the conversation changed since it started:
+- the branches and tags created, deleted or moved, with `+n −m` commits;
+- the `✦` commits;
+- the files HEAD changed, with `+/−`.
 
-`e` y prépare la demande d'une description de pull request.
+`e` there drafts a pull request description.
 
-## Gros dépôts
+## Big repositories
 
-Mesuré sur un dépôt synthétique de 440 000 commits, 7 000 branches, branches distantes et tags :
+Measured on a synthetic repository of 440,000 commits, 7,000 branches, remote branches and tags:
 
-| | sans commit-graph | avec commit-graph |
+| | without commit-graph | with commit-graph |
 | --- | --- | --- |
-| ouverture | 1,6 s | 0,5 s |
-| vue d'ensemble (2 000 commits) | 5,5 s | 1,2 s |
-| rechargement après une commande git de Claude | 1,6 s | 0,6 s |
-| recherche (message, auteur, chemin exact) | 1,7 s | 1,7 s |
-| comparer deux commits à 5 000 commits d'écart | 0,02 s | 0,02 s |
+| opening | 1.6 s | 0.5 s |
+| overview (2,000 commits) | 5.5 s | 1.2 s |
+| reload after one of Claude's git commands | 1.6 s | 0.6 s |
+| search (message, author, exact path) | 1.7 s | 1.7 s |
+| comparing two commits 5,000 commits apart | 0.02 s | 0.02 s |
 
-- L'historique se lit par pages qui grandissent avec la profondeur (100, 200, 400… jusqu'à 1 000), car chaque page fait relire à git tout ce qui la précède.
-- Sans commit-graph, git relit tout l'historique à chaque page. Une lecture de plus de 1,5 s le signale une fois : `git commit-graph write --reachable --changed-paths` accélère la lecture, et la recherche par chemin exact.
-- Un chemin exact (`src/lanes.ts`, `docs/`) se cherche vite. Un morceau de nom (`lanes.`) demande de lire les changements de chaque commit : seulement si le chemin exact ne donne rien, et 15 s au plus.
+- The history is read in pages that grow with depth (100, 200, 400… up to 1,000), since each page makes git read again everything before it.
+- Without a commit-graph, git reads the whole history again for each page. A read over 1.5 s says so once: `git commit-graph write --reachable --changed-paths` speeds up reading, and searching by exact path.
+- An exact path (`src/lanes.ts`, `docs/`) is found fast. A piece of a name (`lanes.`) means reading each commit's changes: only when the exact path finds nothing, and for 15 s at most.
 
-## Rafraîchissement
+## Refreshing
 
-- Après une commande Bash de Claude qui contient `git`, tout le graphe est rechargé.
-- Après une modification de fichier (Edit, Write, ou commande Bash qui écrit), seul le statut est relu.
-- Les rechargements sont regroupés : 150 ms après le dernier appel.
-- Pas de surveillance périodique : `r` sert pour les changements faits hors de la session.
+- After one of Claude's Bash commands that holds `git`, the whole graph reloads.
+- After a file change (Edit, Write, or a Bash command that writes), only the status is read again.
+- Reloads are grouped: 150 ms after the last call.
+- No polling: `r` is for changes made outside the session.
 
-## Sécurité
+## Security
 
-Le mod lance git sans shell, en passant les arguments directement (`$.process.run`).
+The mod runs git without a shell, passing the arguments directly (`$.process.run`).
 
-- Les lectures passent par une liste blanche (`src/git-commands.ts`, `isReadOnly`).
-- Les écritures passent par une garde à part (`src/git-actions.ts`, `isAllowedWrite`). Elle n'admet que les formes construites par les actions et par l'annulation :
-  - `switch <branche>`, `switch --track`, `switch --detach <hash>` ;
-  - `tag -a … <hash>` ;
-  - `push --follow-tags [-u] <distant> <branche>` ;
-  - `update-ref` d'une branche ou d'un tag local, vérifié contre sa valeur actuelle ;
-  - `reset --keep|--soft <hash>`, `stash apply <hash>` (`a`, ou la récupération de fichiers jetés), et `stash create` (la copie de sauvegarde).
+- Reads go through an allowlist (`src/git-commands.ts`, `isReadOnly`).
+- Writes go through a guard of their own (`src/git-actions.ts`, `isAllowedWrite`). It admits only the shapes the actions and the undo build:
+  - `switch <branch>`, `switch --track`, `switch --detach <hash>`;
+  - `tag -a … <hash>`;
+  - `push --follow-tags [-u] <remote> <branch>`;
+  - `update-ref` of a local branch or tag, checked against its current value;
+  - `reset --keep|--soft <hash>`, `stash apply <hash>` (`a`, or bringing back thrown-away files), and `stash create` (the safety copy).
 
-  Elle refuse tout le reste : `--force`, refspec `+…` ou `:…`, `--delete`, `tag -d`, `reset --hard`, toute référence distante, etc. Ces écritures ne partent qu'après `y`, sauf `stash create`, qui ne modifie ni les fichiers ni les branches.
-- Chaque appel passe aussi `--no-optional-locks`, `-c core.fsmonitor=false` et `-c log.showSignature=false` ; les diffs passent `--no-ext-diff --no-textconv`. Un dépôt ne peut donc ni écrire son index ni lancer un programme configuré.
+  It refuses everything else: `--force`, a `+…` or `:…` refspec, `--delete`, `tag -d`, `reset --hard`, any remote ref, and so on. These writes run only after `y`, except `stash create`, which changes neither the files nor the branches.
+- Every call also passes `--no-optional-locks`, `-c core.fsmonitor=false` and `-c log.showSignature=false`; diffs pass `--no-ext-diff --no-textconv`. A repository can thus neither have its index written nor start a program it configures.
 
-## Structure
+## Layout
 
 ```
-src/      cœur pur, sans dépendance à Claude Code : commandes git, parsing,
-          calcul des lanes, couleurs, étiquettes, mise en page, lignes,
-          vue d'ensemble (repliement), actions (branche, tag, push) et leur garde,
-          garde-fou (guard.ts), journal et annulation (journal.ts), vue session,
-          recherche (search.ts)
-hooks/    le mod : register.tsx (hooks), controller.ts (état), view.tsx (rendu)
-types/    contrat $.state (l'état des refs au début de la session, pour ✦)
-tests/    lanes, parsing, étiquettes et couleurs, lignes, vue d'ensemble, actions, garde-fou,
-          journal, recherche, contrôleur, panneau monté
+src/      the pure core, with no Claude Code dependency: git commands, parsing,
+          lane layout, colours, labels, columns, rows,
+          overview (folding), actions (branch, tag, push) and their guard,
+          guard (guard.ts), journal and undo (journal.ts), session view,
+          search (search.ts), strings in English and French (i18n.ts)
+hooks/    the mod: register.tsx (hooks), controller.ts (state), view.tsx (drawing)
+types/    the $.state contract (the refs at the session's start, for ✦; the journal)
+tests/    lanes, parsing, labels and colours, rows, overview, actions, guard,
+          journal, search, strings, controller, the mounted pane
 ```
 
-## Développer
+## Develop
 
-Depuis le dossier du dépôt :
+From the repository's folder:
 
 ```sh
-claude plugin test .         # 194 tests
+claude plugin test .         # 267 tests
 claude plugin validate .
-npx -p typescript tsc -p .   # après un premier lancement avec --plugin-dir,
-                             # qui dépose les types dans .claude-plugin/types/
+npx -p typescript tsc -p .   # after a first run with --plugin-dir,
+                             # which lays the types in .claude-plugin/types/
 ```
