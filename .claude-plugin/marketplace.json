@@ -8,7 +8,7 @@
     {
       "name": "ctree",
       "source": "./",
-      "description": "The repository's git graph beside the conversation: follows Claude's git commands, holds the ones that would lose work, undoes them; search, compare, stashes"
+      "description": "The repository's git graph beside the conversation: follows Claude's git commands, holds the ones that would lose work, undoes them, rewinds git to before a turn; search, compare, stashes"
     }
   ]
 }

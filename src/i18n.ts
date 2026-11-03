@@ -203,8 +203,10 @@ const EN = {
     currentKept: (ref: string) => `${ref} is the current branch: kept`,
     title: (count: number) => `⟲ Journal of Claude’s git commands · ${count}`,
     empty: '  Claude has not changed anything with git in this session yet.',
-    entry: (turn: number, command: string, isSubagent: boolean, isUndone: boolean, when: string) =>
-      `turn ${turn} · ${command}${isSubagent ? ' · subagent' : ''}${isUndone ? ' · undone' : ''} · ${when}`,
+    turn: (turn: number, prompt: string | null) => `▸ Turn ${turn}${prompt ? ` · "${prompt}"` : ''}`,
+    entry: (command: string, isSubagent: boolean, state: 'undone' | 'rewound' | null, when: string) =>
+      `${command}${isSubagent ? ' · subagent' : ''}${state === 'undone' ? ' · undone' : state === 'rewound' ? ' · rewound' : ''} · ${when}`,
+    rewindCommand: (turn: number) => `ctree: rewind of git to before turn ${turn}`,
     nothing: 'nothing changed',
   },
   undo: {
@@ -218,6 +220,30 @@ const EN = {
     nothingLeft: 'nothing left to put back',
     nothing: 'Nothing to undo: Claude has not changed anything with git yet',
     already: 'Already undone',
+    rewound: 'Rewound with its turn: u undoes the rewind',
+  },
+  rewind: {
+    title: (turn: number, prompt: string | null) => `⟲ Rewind git to before turn ${turn}${prompt ? ` "${prompt}"` : ''}`,
+    offered: (turn: number) => `⟲ Claude Code went back to before turn ${turn}, git did not: rewind it too?`,
+    gitOnly: 'git only',
+    withFiles: (short: string) => `git, and the files thrown away (git stash apply ${short})`,
+    otherCopies: (count: number) => `${plural(count, 'other copy', 'other copies')} of thrown-away files in those turns: ⏎ on its command brings each back`,
+    pushed: (ref: string, remote: string, commits: string | null) =>
+      `${ref} moved in these turns (a push): ${remote} keeps ${commits ?? 'what was pushed'}; ctree never touches the remote`,
+    movedOutside: (ref: string) => `${ref} moved outside the journal since: left as it is`,
+    headOutside: 'HEAD moved outside the journal since: left where it is',
+    elsewhere: (ref: string) => `${ref} is checked out in another worktree: left as it is`,
+    incomplete: 'The journal no longer holds all of that turn (it keeps the last 200 commands): rewind to a later turn.',
+    nothing: 'Nothing to put back: git already stands as it did before that turn.',
+    conflict: (files: readonly string[]) =>
+      `git would refuse: your changes to ${files.slice(0, 3).join(', ')}${files.length > 3 ? ', …' : ''} would be overwritten. Commit or stash them first.`,
+    confirm: 'rewind',
+    done: (turn: number) => `✓ Git rewound to before turn ${turn}`,
+    doneWithFiles: (turn: number) => `✓ Git rewound to before turn ${turn}, files recovered`,
+    ran: (done: number, total: number) => `${done} of ${total} commands ran: the journal keeps what they did, u undoes it`,
+    notRun: (commands: readonly string[]) => `not run: ${commands.join(' · ')}`,
+    noTurn: 'Select a turn, or one of its commands, to rewind git to before it',
+    later: 'Claude Code went back in the conversation, git did not: ctree asks in its pane (Ctrl+X Tab, or a click, to answer)',
   },
   session: {
     title: (since: string | null) => `✦ This session${since ? ` · started ${since} ago` : ''}`,
@@ -340,6 +366,7 @@ const EN = {
     back: 'back',
     scroll: '↑↓ scroll',
     undoThis: '⏎ undo this one',
+    rewind: 'rewind to before this turn',
     undoLast: 'undo the last',
     pr: 'PR description',
     fileDiff: '⏎ file diff',
@@ -372,7 +399,7 @@ const EN = {
       ]],
       ['What Claude does', [
         ['u', 'undo its last git command'],
-        ['l', 'journal of its git commands, each one undoable'],
+        ['l', 'journal of its git commands by turn: ⏎ undoes one, r rewinds git to before a turn'],
         ['s', 'what this session changed; e there drafts a PR description'],
       ]],
       ['Display', [
@@ -581,8 +608,10 @@ const FR: Messages = {
     currentKept: ref => `${ref} est la branche courante : gardée`,
     title: count => `⟲ Journal des commandes git de Claude · ${count}`,
     empty: '  Claude n’a encore rien changé avec git dans cette session.',
-    entry: (turn, command, isSubagent, isUndone, when) =>
-      `tour ${turn} · ${command}${isSubagent ? ' · sous-agent' : ''}${isUndone ? ' · annulé' : ''} · ${when}`,
+    turn: (turn, prompt) => `▸ Tour ${turn}${prompt ? ` · « ${prompt} »` : ''}`,
+    entry: (command, isSubagent, state, when) =>
+      `${command}${isSubagent ? ' · sous-agent' : ''}${state === 'undone' ? ' · annulé' : state === 'rewound' ? ' · rembobiné' : ''} · ${when}`,
+    rewindCommand: turn => `ctree : git rembobiné avant le tour ${turn}`,
     nothing: 'rien de changé',
   },
   undo: {
@@ -596,6 +625,30 @@ const FR: Messages = {
     nothingLeft: 'plus rien à remettre',
     nothing: 'Rien à annuler : Claude n’a encore rien changé avec git',
     already: 'Déjà annulé',
+    rewound: 'Rembobiné avec son tour : u annule le rembobinage',
+  },
+  rewind: {
+    title: (turn, prompt) => `⟲ Rembobiner git avant le tour ${turn}${prompt ? ` « ${prompt} »` : ''}`,
+    offered: turn => `⟲ Claude Code est revenu avant le tour ${turn}, git non : le rembobiner aussi ?`,
+    gitOnly: 'git seul',
+    withFiles: short => `git, et les fichiers jetés (git stash apply ${short})`,
+    otherCopies: count => `${pluriel(count, 'autre copie', 'autres copies')} de fichiers jetés dans ces tours : ⏎ sur sa commande récupère chacune`,
+    pushed: (ref, remote, commits) =>
+      `${ref} a bougé dans ces tours (un push) : ${remote} garde ${commits ?? 'ce qui a été poussé'} ; ctree ne touche jamais au distant`,
+    movedOutside: ref => `${ref} a bougé hors du journal depuis : laissée telle quelle`,
+    headOutside: 'HEAD a bougé hors du journal depuis : laissé où il est',
+    elsewhere: ref => `${ref} est extraite dans un autre worktree : laissée telle quelle`,
+    incomplete: 'Le journal ne contient plus tout ce tour (il garde les 200 dernières commandes) : rembobine un tour plus récent.',
+    nothing: 'Rien à remettre : git est déjà comme avant ce tour.',
+    conflict: files =>
+      `git refuserait : tes modifications de ${files.slice(0, 3).join(', ')}${files.length > 3 ? ', …' : ''} seraient écrasées. Committe-les ou mets-les de côté d’abord.`,
+    confirm: 'rembobiner',
+    done: turn => `✓ Git rembobiné avant le tour ${turn}`,
+    doneWithFiles: turn => `✓ Git rembobiné avant le tour ${turn}, fichiers récupérés`,
+    ran: (done, total) => `${done} commande${done > 1 ? 's' : ''} sur ${total} lancée${done > 1 ? 's' : ''} : le journal garde ce qu’elles ont fait, u l’annule`,
+    notRun: commands => `pas lancé : ${commands.join(' · ')}`,
+    noTurn: 'Sélectionne un tour, ou une de ses commandes, pour rembobiner git avant lui',
+    later: 'Claude Code est revenu en arrière dans la conversation, git non : ctree pose la question dans son panneau (Ctrl+X Tab, ou un clic, pour répondre)',
   },
   session: {
     title: since => `✦ Cette session${since ? ` · depuis ${since}` : ''}`,
@@ -719,6 +772,7 @@ const FR: Messages = {
     back: 'retour',
     scroll: '↑↓ défiler',
     undoThis: '⏎ annuler celle-ci',
+    rewind: 'rembobiner avant ce tour',
     undoLast: 'annuler la dernière',
     pr: 'description de PR',
     fileDiff: '⏎ diff du fichier',
@@ -751,7 +805,7 @@ const FR: Messages = {
       ]],
       ['Ce que fait Claude', [
         ['u', 'annuler sa dernière commande git'],
-        ['l', 'journal de ses commandes git, chacune annulable'],
+        ['l', 'journal de ses commandes git par tour : ⏎ en annule une, r rembobine git avant un tour'],
         ['s', 'ce que cette session a changé ; e y prépare une description de PR'],
       ]],
       ['Affichage', [
@@ -829,6 +883,12 @@ export const NOTES = {
   undone: (command: string, turn: number, what: string, withFiles: boolean) =>
     `[ctree] Through the pane, the person undid your command "${command}" (turn ${turn}): ${what}` +
     `${withFiles ? ', and the changed files it threw away are back' : ''}. The repository is back to how it was before that command.`,
+  rewound: (turn: number, prompt: string | null, what: string, withFiles: boolean) =>
+    `[ctree] Through the pane, the person rewound git to before turn ${turn}${prompt ? ` ("${prompt}")` : ''}: ${what}` +
+    `${withFiles ? ', and the changed files thrown away in those turns are back' : ''}. ` +
+    'What your git commands did in those turns is undone: do not rely on it.',
+  rewindUndone: (turn: number, what: string) =>
+    `[ctree] Through the pane, the person undid the rewind of git to before turn ${turn} (which had done: ${what}). Git is back to how it was before that rewind.`,
   refused: (command: string, lines: readonly string[]) =>
     `ctree: the person refused "${command}", which would have lost: ${lines.join('; ')}. ` +
     'Do not run this command again as is: ask them how to proceed.',

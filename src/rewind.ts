@@ -52,29 +52,79 @@ const leftAt = <T>(entry: JournalEntry, before: T, after: T): T => (entry.isUndo
 
 const sameHead = (a: CtreeHead, b: CtreeHead) => (a.branch !== null ? a.branch === b.branch : b.branch === null && a.hash === b.hash)
 
+/** One turn as the journal draws it: a run of consecutive entries of that turn, newest first. */
+export type TurnGroup = { turn: number; prompt: string | null; entries: JournalEntry[] }
+
 /**
- * How to put git back to where it stood before `turn`, from the journal and
- * the refs `now`. For each local ref the turns touched: its value before the
- * first of them, unless it no longer stands where the last of them left it
- * (moved outside the journal: left alone). HEAD likewise. `elsewhere` names
- * the branches checked out in other worktrees, which are left alone.
+ * The journal by turn, newest first. A group is a run of consecutive entries
+ * of one turn: after Claude Code's /rewind the conversation's turns count
+ * again from where it went back, so a turn's number can come back, and the
+ * runs keep the two apart.
+ */
+export function turnGroups(journal: readonly JournalEntry[]): TurnGroup[] {
+  const groups: TurnGroup[] = []
+
+  for (const entry of journal) {
+    const group = groups[groups.length - 1]
+
+    if (group && group.turn === entry.turn) {
+      group.entries.push(entry)
+      group.prompt ??= entry.prompt ?? null
+    } else {
+      groups.push({ turn: entry.turn, prompt: entry.prompt ?? null, entries: [entry] })
+    }
+  }
+
+  return groups
+}
+
+/** The oldest entry of a group: where a rewind to before that turn starts. */
+export const groupStart = (group: TurnGroup): JournalEntry | undefined => group.entries[group.entries.length - 1]
+
+/**
+ * Where a rewind to before `turn` starts once Claude Code's /rewind went
+ * back there: the oldest of the newest entries whose turn is `turn` or later,
+ * walking back from the newest until an earlier turn.
+ */
+export function rewindStart(journal: readonly JournalEntry[], turn: number): string | null {
+  let start: string | null = null
+
+  for (const entry of journal) {
+    if (entry.turn < turn) break
+    start = entry.id
+  }
+
+  return start
+}
+
+/**
+ * How to put git back to where it stood before the entry `start`, from the
+ * journal and the refs `now`: every entry from it to the newest is undone at
+ * once. For each local ref they touched: its value before the first of them,
+ * unless it no longer stands where the last of them left it (moved outside
+ * the journal: left alone). HEAD likewise. `elsewhere` names the branches
+ * checked out in other worktrees, which are left alone.
  */
 export function rewindPlan(
   journal: readonly JournalEntry[],
-  turn: number,
+  start: string,
   now: RefState,
   elsewhere: readonly string[] = [],
 ): RewindPlan | RewindRefusal {
+  const at = journal.findIndex(entry => entry.id === start)
+
+  if (at === -1) return { kind: 'nothing' }
+
   // The journal keeps the newest entries: when full, its oldest turn may have lost some.
-  const oldest = journal[journal.length - 1]
+  if (journal.length >= JOURNAL_SIZE && at === journal.length - 1) return { kind: 'incomplete' }
 
-  if (journal.length >= JOURNAL_SIZE && oldest && oldest.turn >= turn) return { kind: 'incomplete' }
-
-  const entries = journal.filter(entry => entry.turn >= turn).reverse()
+  const entries = journal.slice(0, at + 1).reverse()
   const first = entries[0]
   const last = entries[entries.length - 1]
 
   if (!first || !last) return { kind: 'nothing' }
+
+  const turn = first.turn
 
   const left: Left[] = []
   const chains = new Map<string, { target: string | null; expected: string | null }>()

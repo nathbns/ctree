@@ -94,7 +94,7 @@ The keys are the same in both languages. The notes ctree leaves for Claude (afte
 | `t` | creates an annotated tag on the selected commit |
 | `p` | pushes the current branch |
 | `u` | undoes Claude's last git command (once confirmed) |
-| `l` | journal of Claude's git commands; Enter on an entry undoes it |
+| `l` | journal of Claude's git commands, by turn; Enter on a command undoes it, `r` on a turn rewinds git to before it |
 | `s` | session view: what this conversation changed; `e` there drafts a PR description |
 | `z` | full width above the prompt, or back to the pane (the choice is kept) |
 | `r` | reloads the repository |
@@ -212,7 +212,7 @@ Let it run?
 - **To turn the guard off**: the `guard` option (`/plugin configure ctree@ctree` once installed; with `--plugin-dir`, `pluginConfigs` → `ctree@inline` → `guard: false`). It is on by default. The guard does not apply when nobody is there to answer (`claude -p`).
 - **In default mode**, Claude Code may still ask its own permission after your answer.
 
-**The journal (`l`).** Each of Claude's git commands that moves a branch, a tag or HEAD, or throws changes away, goes in it: the conversation's turn, the command, what moved (`main a2e6115 → 8282214`).
+**The journal (`l`).** Each of Claude's git commands that moves a branch, a tag or HEAD, or throws changes away, goes in it, under its turn of the conversation and the start of that turn's prompt: the command, and what moved (`main a2e6115 → 8282214`).
 
 **Undo (`u`, or Enter in the journal).** The confirmation shows the exact commands, then:
 - a branch created is deleted, a branch deleted is made again, HEAD goes back to its branch from before;
@@ -223,6 +223,26 @@ Let it run?
 - a push is never undone, as that would take a force push.
 
 Claude gets a note: it knows its command was undone.
+
+**Rewind git to before a turn (`r` in the journal).** Claude Code's `/rewind` brings back your files and the conversation, never what Bash commands did to git. ctree does that part. On a turn, `r` (or Enter on its header) puts git back to how it stood just before it:
+
+```
+⟲ Rewind git to before turn 1 "Run exactly this and nothing else: git commit --allow-em…
+  git update-ref refs/heads/main bc3325e 4614d97
+  git switch main
+  git update-ref -d refs/heads/spike 51bc741
+  2 commits (51bc741 turn two · 4614d97 turn one) will no longer be on any branch
+y: rewind  n: cancel
+```
+
+- Every local branch and tag those turns moved goes back, the ones they made are deleted, the ones they deleted are made again, and HEAD goes back to its branch or commit.
+- Only with the commands the undo already uses: `update-ref` checked against the current value, `reset --keep` for the current branch, `switch` for HEAD. The one that touches the files runs first, so if git refuses it nothing else has run; and local changes it would overwrite are found before anything runs.
+- When a command of those turns threw changed files away, a second choice brings them back too (the oldest copy the guard saved, `git stash apply`).
+- A branch moved outside the journal since is left as it is, with a note. A remote branch is never touched: a push in those turns is said, and the remote keeps what it got.
+- If a command fails halfway, it stops and says what ran and what did not; what ran is in the journal, so `u` undoes it.
+- The rewind is itself in the journal, and `u` undoes it. Claude gets a note.
+
+**After Claude Code's `/rewind`.** When the conversation goes back, ctree notices (its count of turns falls) and offers, in its pane, to rewind git to the same point: the band shows the commands, and nothing runs before `y`. Ctrl+X Tab, or a click, gives the pane the keyboard.
 
 **The session view (`s`).** What the conversation changed since it started:
 - the branches and tags created, deleted or moved, with `+n −m` commits;
@@ -259,7 +279,7 @@ Measured on a synthetic repository of 440,000 commits, 7,000 branches, remote br
 The mod runs git without a shell, passing the arguments directly (`$.process.run`).
 
 - Reads go through an allowlist (`src/git-commands.ts`, `isReadOnly`).
-- Writes go through a guard of their own (`src/git-actions.ts`, `isAllowedWrite`). It admits only the shapes the actions and the undo build:
+- Writes go through a guard of their own (`src/git-actions.ts`, `isAllowedWrite`). It admits only the shapes the actions, the undo and the rewind build (the rewind adds none of its own):
   - `switch <branch>`, `switch --track`, `switch --detach <hash>`;
   - `tag -a … <hash>`;
   - `push --follow-tags [-u] <remote> <branch>`;
@@ -278,11 +298,11 @@ src/      the pure core, with no Claude Code dependency: git commands, parsing,
           overview (folding), actions (branch, tag, push) and their guard,
           guard (guard.ts), journal and undo (journal.ts), session view,
           search (search.ts), strings in English and French (i18n.ts),
-          the demo repository and its guard (demo.ts)
+          the demo repository and its guard (demo.ts), rewinding git to before a turn (rewind.ts)
 hooks/    the mod: register.tsx (hooks), controller.ts (state), view.tsx (drawing)
 types/    the $.state contract (the refs at the session's start, for ✦; the journal)
 tests/    lanes, parsing, labels and colours, rows, overview, actions, guard,
-          journal, search, strings, demo, controller, the mounted pane
+          journal, rewind, search, strings, demo, controller, the mounted pane
 ```
 
 ## Develop
@@ -290,7 +310,7 @@ tests/    lanes, parsing, labels and colours, rows, overview, actions, guard,
 From the repository's folder:
 
 ```sh
-claude plugin test .         # 280 tests
+claude plugin test .         # 304 tests
 claude plugin validate .
 npx -p typescript tsc -p .   # after a first run with --plugin-dir,
                              # which lays the types in .claude-plugin/types/

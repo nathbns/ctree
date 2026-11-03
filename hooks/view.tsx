@@ -23,6 +23,7 @@ import {
 import { counts, relativeDate, shortAuthor, shortHash, statusLetter } from '../src/format'
 import { t } from '../src/i18n'
 import { describeMoves } from '../src/journal'
+import { groupStart, turnGroups } from '../src/rewind'
 import { matchWords } from '../src/search'
 import type { Band, CompareMode, Controller, DiffMode, SearchMode, SessionMode } from './controller'
 
@@ -133,6 +134,10 @@ export function fitKeys(keys: readonly Key[], width: number, rows: number): { sh
   return { shown, hidden: keys.slice(count).filter(key => key.hotkey !== '⏎'), isLong, gap }
 }
 
+/** Every command an action runs, in order, as the band shows them. */
+const commandsOf = (action: { args: readonly string[]; then?: readonly (readonly string[])[] }): string[] =>
+  [action.args, ...(action.then ?? [])].map(displayCommand)
+
 /** Rows a band takes, so the window of rows above it keeps the pane's height. */
 function bandRows(band: Band): number {
   switch (band.kind) {
@@ -140,9 +145,12 @@ function bandRows(band: Band): number {
     case 'running':
       return 2
     case 'confirm':
-      return 3 + band.action.details.length
-    case 'choose':
-      return 2 + Math.min(9, band.actions.length)
+      return 2 + commandsOf(band.action).length + band.action.details.length
+    case 'choose': {
+      const [first] = band.actions
+
+      return 2 + Math.min(9, band.actions.length) + (band.isShared && first ? commandsOf(first).length + first.details.length : 0)
+    }
     case 'tag-form':
       return 4
     case 'search-form':
@@ -308,7 +316,10 @@ function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderEle
       return (
         <Box flexDirection="column">
           <Text bold>{line(band.action.title)}</Text>
-          <Text color="claude">{line(`  ${displayCommand(band.action.args)}`)}</Text>
+          {/* Every command it runs, as they will run. */}
+          {commandsOf(band.action).map(command => (
+            <Text color="claude">{line(`  ${command}`)}</Text>
+          ))}
           {band.action.details.map(detail => (
             <Text dimColor>{line(`  ${detail}`)}</Text>
           ))}
@@ -318,17 +329,24 @@ function bandTree(ui: Ui, ctl: Controller, band: Band, width: number): RenderEle
           </Box>
         </Box>
       )
-    case 'choose':
+    case 'choose': {
+      // Choices that share their commands (a rewind, with or without the files) list them once, then say what each adds.
+      const [first] = band.actions
+      const shared = band.isShared && first ? first : null
+
       return (
         <Box flexDirection="column">
           <Text bold>{line(band.title)}</Text>
-          {/* Each choice by every command it runs: two undos differ only in their last one. */}
+          {shared && commandsOf(shared).map(command => <Text color="claude">{line(`  ${command}`)}</Text>)}
+          {shared && shared.details.map(detail => <Text dimColor>{line(`  ${detail}`)}</Text>)}
+          {/* Otherwise each choice by every command it runs: two undos differ only in their last one. */}
           {band.actions.slice(0, 9).map((action, i) =>
-            act(String(i + 1), line([action.args, ...(action.then ?? [])].map(displayCommand).join(' && ')), () => void ctl.confirm(i)),
+            act(String(i + 1), line(shared && action.choice ? action.choice : commandsOf(action).join(' && ')), () => void ctl.confirm(i)),
           )}
           <Box flexDirection="row" columnGap={2}>{cancel()}</Box>
         </Box>
       )
+    }
     case 'tag-form': {
       const title = said.tagForm.title(shortHash(band.commit.hash), band.commit.subject)
 
@@ -435,26 +453,42 @@ function journalTree(ui: Ui, ctl: Controller, width: number, now: number): Rende
   const said = t().journal
   const line = (text: string) => truncate(text, width)
 
+  // By turn, newest first: Enter on a turn rewinds git to before it, on a command undoes it alone.
   return (
     <Box flexDirection="column">
       <Text bold>{line(said.title(journal.length))}</Text>
       {journal.length === 0 && <Text dimColor>{line(said.empty)}</Text>}
-      {journal.map((entry, i) => {
-        const when = relativeDate(Math.floor(entry.at / 1000), now)
-        const label = line(said.entry(entry.turn, entry.command, entry.isSubagent, entry.isUndone === true, when))
+      {turnGroups(journal).map((group, i) => {
+        const start = groupStart(group)?.id ?? ''
 
         return (
           <Box flexDirection="column">
             <Button
-              key={`journal-${entry.id}`}
+              key={`turn-${start}`}
               plain
               {...(i === 0 && !band ? { autoFocus: true as const } : {})}
-              {...(entry.isUndone ? { dimColor: true } : {})}
-              onPress={() => void ctl.beginUndo(entry.id)}
+              onPress={() => void ctl.rewindHere(`turn-${start}`)}
             >
-              {label}
+              <Text bold>{line(said.turn(group.turn, group.prompt))}</Text>
             </Button>
-            <Text dimColor>{line(`    ${describeMoves(entry).join(' · ') || said.nothing}`)}</Text>
+            {group.entries.map(entry => {
+              const when = relativeDate(Math.floor(entry.at / 1000), now)
+              const state = entry.isUndone ? 'undone' : entry.rewoundBy ? 'rewound' : null
+
+              return (
+                <Box flexDirection="column">
+                  <Button
+                    key={`journal-${entry.id}`}
+                    plain
+                    {...(state ? { dimColor: true } : {})}
+                    onPress={() => void ctl.beginUndo(entry.id)}
+                  >
+                    {line(`  ${said.entry(ctl.commandOf(entry), entry.isSubagent, state, when)}`)}
+                  </Button>
+                  <Text dimColor>{line(`      ${describeMoves(entry).join(' · ') || said.nothing}`)}</Text>
+                </Box>
+              )
+            })}
           </Box>
         )
       })}
@@ -717,8 +751,9 @@ function keys(
 
   if (where === 'journal') {
     return (
-      <Box flexDirection="row" columnGap={2}>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
         <Text dimColor>{said.undoThis}</Text>
+        {key('r', said.rewind, () => void ctl.rewindHere())}
         {key('u', said.undoLast, () => void ctl.beginUndo())}
         {key('q', said.back, () => ctl.back())}
       </Box>

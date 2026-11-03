@@ -543,9 +543,12 @@ describe('the guard and the journal (V3, lot C)', () => {
 
     await ui.press({ key: 'key-l' })
 
-    const entry = (await ui.findAll({ type: 'Button' })).find(button => button.key?.startsWith('journal-'))
+    const buttons = await ui.findAll({ type: 'Button' })
+    const entry = buttons.find(button => button.key?.startsWith('journal-'))
 
-    expect(entry?.text).toContain(say('turn 3 · git reset --hard HEAD~1', 'tour 3 · git reset --hard HEAD~1'))
+    // By turn: the turn's header, then its commands.
+    expect(buttons.find(button => button.key?.startsWith('turn-'))?.text).toContain(say('▸ Turn 3', '▸ Tour 3'))
+    expect(entry?.text).toContain('git reset --hard HEAD~1')
     expect(await ui.find({ type: 'Text', text: /main 3333333 → 6666666/ })).toBeDefined()
 
     await ui.press({ key: entry?.key ?? '' })
@@ -559,6 +562,47 @@ describe('the guard and the journal (V3, lot C)', () => {
     await w.clock.settle()
 
     expect(w.writes.filter(args => args[0] !== 'stash')).toEqual([['reset', '--keep', h('3')]])
+    await ui.unmount()
+  })
+
+  inBoth('the journal by turn: r on a turn shows the rewind with every command; y runs them', async (say, $, on) => {
+    const { refs, script } = movable()
+    const w = world(on, script)
+
+    on('tool.call', { tool: 'Bash' }, ($, e) => {
+      // What the command does to the refs.
+      if (e.command.startsWith('git commit')) refs['refs/heads/main'] = h('9')
+      if (e.command.startsWith('git branch')) refs['refs/heads/spike'] = h('9')
+
+      return { result: {} }
+    })
+    await openPane($, w)
+    await $.tool.call({ tool: 'Bash', command: 'git commit -am "x"' })
+    await $.tool.call({ tool: 'Bash', command: 'git branch spike' })
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    await ui.press({ key: 'key-l' })
+
+    const turns = (await ui.findAll({ type: 'Button' })).filter(button => button.key?.startsWith('turn-'))
+
+    // One turn (the session's third), its two commands under it.
+    expect(turns.map(button => button.text)).toEqual([say('▸ Turn 3', '▸ Tour 3')])
+    expect((await ui.findAll({ type: 'Button' })).filter(button => button.key?.startsWith('journal-'))).toHaveLength(2)
+
+    await ui.press({ key: 'key-r' })
+    await w.clock.settle()
+
+    expect(await ui.find({ type: 'Text', text: say(/⟲ Rewind git to before turn 3/, /⟲ Rembobiner git avant le tour 3/) })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /git reset --keep 3333333/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /git update-ref -d refs\/heads\/spike 9999999/ })).toBeDefined()
+    expect(w.writes.filter(args => args[0] !== 'stash')).toEqual([])
+
+    await ui.press({ key: 'act-y' })
+    await w.clock.settle()
+
+    expect(w.writes.filter(args => args[0] !== 'stash')).toEqual([['reset', '--keep', h('3')], ['update-ref', '-d', 'refs/heads/spike', h('9')]])
+    expect(JSON.stringify(w.session.appended().at(-1)?.message.content)).toContain('the person rewound git to before turn 3')
     await ui.unmount()
   })
 

@@ -23,7 +23,15 @@ function fakeHost(script: Script = () => undefined) {
   const notes: string[] = []
   const asked: string[] = []
   // The guard's question is answered by its first option (let it run), its second (refuse), or dismissed.
-  const git = { refusal: null as string | null, answer: 'run' as 'run' | 'refuse' | null }
+  const git = {
+    refusal: null as string | null,
+    answer: 'run' as 'run' | 'refuse' | null,
+    /** git refuses the write this matches, once. */
+    failOn: null as ((args: readonly string[]) => boolean) | null,
+    /** The conversation's prompt count, as Claude Code would say it. */
+    turn: 4,
+  }
+  const toasts: string[] = []
   // The repository's refs, which the undo writes move for real.
   const repo: RefState = {
     refs: { 'refs/heads/main': h('3'), 'refs/heads/feature/ui': h('1'), 'refs/remotes/origin/main': h('3') },
@@ -39,6 +47,9 @@ function fakeHost(script: Script = () => undefined) {
       return { exitCode: 0, stdout: Object.entries(repo.refs).map(([ref, hash]) => `${ref}\x1f${hash}`).join('\n') + '\n' }
     }
     if (args[0] === 'symbolic-ref') return repo.head.branch ? { exitCode: 0, stdout: `refs/heads/${repo.head.branch}\n` } : { exitCode: 1, stdout: '' }
+    if (args[0] === 'rev-parse' && args.includes('HEAD^{commit}')) return { exitCode: 0, stdout: `${repo.head.hash}\n` }
+    // What a rewind would leave on no branch: nothing, unless a test says.
+    if (args[0] === 'log' && args.includes('--stdin')) return { exitCode: 0, stdout: '' }
 
     return undefined
   }
@@ -56,9 +67,11 @@ function fakeHost(script: Script = () => undefined) {
 
       writes.push([...args])
 
-      const refusal = git.refusal
+      const refusal = git.refusal ?? (git.failOn?.(args) ? 'Your local changes would be overwritten' : null)
 
       git.refusal = null
+
+      if (refusal && git.failOn?.(args)) git.failOn = null
 
       if (refusal) return { code: 1, stdout: '', stderr: `error: ${refusal}\nhint: try again\n` }
 
@@ -90,7 +103,11 @@ function fakeHost(script: Script = () => undefined) {
         stored.set(key, value)
       },
     },
-    turns: async () => 4,
+    turns: async () => git.turn,
+    prompt: async () => `prompt of turn ${git.turn}`,
+    toast: text => {
+      toasts.push(text)
+    },
     now: async () => 1_800_000_000_000,
     journal: {
       get: async () => journal,
@@ -138,7 +155,7 @@ function fakeHost(script: Script = () => undefined) {
     },
   }
 
-  return { host, runs, filled, copied, focused, writes, notes, asked, git, repo, flush: () => timers.splice(0).forEach(fn => fn()) }
+  return { host, runs, filled, copied, focused, writes, notes, asked, toasts, git, repo, flush: () => timers.splice(0).forEach(fn => fn()) }
 }
 
 /** git for a linear history of 250 commits, `main` and HEAD on the newest. */
@@ -805,5 +822,219 @@ describe('copying, HEAD, stashes and the help', () => {
     expect(ctl.model.mode.kind).toBe('help')
     ctl.back()
     expect(ctl.model.mode.kind).toBe('list')
+  })
+})
+
+describe('rewinding git to before a turn', () => {
+  const [A, B, C, M, S] = [h('a'), h('b'), h('c'), h('e'), h('5')]
+
+  /** One of Claude's commands in `turn`, journaled as the hooks journal it: what it does to the repository. */
+  const claude = async (fake: ReturnType<typeof fakeHost>, ctl: Awaited<ReturnType<typeof loaded>>['ctl'], turn: number, command: string, change: () => void, saved?: string) => {
+    fake.git.turn = turn
+
+    const before = await ctl.watch()
+
+    change()
+    await ctl.record(command, before!, { isSubagent: false, ...(saved ? { saved: { hash: saved, files: 1 } } : {}) })
+  }
+
+  /** The session: commit, a branch made, a reset --hard throwing files away, a rebase, a merge, a push, the branch deleted. */
+  async function session(script?: Script) {
+    const loadedOne = await loaded(script)
+    const { ctl, repo } = loadedOne
+    const fake = loadedOne as unknown as ReturnType<typeof fakeHost>
+    const set = (ref: string, hash: string | null) => {
+      if (hash === null) delete repo.refs[ref]
+      else repo.refs[ref] = hash
+
+      if (repo.head.branch && ref === `refs/heads/${repo.head.branch}`) repo.head = { ...repo.head, hash }
+    }
+    const go = (branch: string) => {
+      repo.head = { branch, hash: repo.refs[`refs/heads/${branch}`] ?? null }
+    }
+
+    await claude(fake, ctl, 1, 'git commit -am A', () => set('refs/heads/main', A))
+    await claude(fake, ctl, 2, 'git checkout -b topic && git commit -am B', () => {
+      set('refs/heads/topic', A)
+      go('topic')
+      set('refs/heads/topic', B)
+    })
+    await claude(fake, ctl, 3, 'git reset --hard HEAD~1', () => set('refs/heads/topic', A), S)
+    await claude(fake, ctl, 4, 'git rebase main', () => set('refs/heads/topic', C))
+    await claude(fake, ctl, 5, 'git switch main && git merge topic', () => {
+      go('main')
+      set('refs/heads/main', M)
+    })
+    await claude(fake, ctl, 6, 'git push origin main', () => set('refs/remotes/origin/main', M))
+    await claude(fake, ctl, 7, 'git branch -D topic', () => set('refs/heads/topic', null))
+
+    return { ...loadedOne, set }
+  }
+
+  /** The journal row of a turn's header, as the view keys it. */
+  const turnKey = (ctl: Awaited<ReturnType<typeof loaded>>['ctl'], turn: number) => {
+    const start = [...ctl.model.journal].reverse().find(entry => entry.turn === turn)
+
+    return `turn-${start?.id}`
+  }
+
+  inBoth('the whole session back to before turn 1: the band lists the commands, the push and the files; run, then undone', async say => {
+    const { ctl, repo, writes, notes } = await session()
+
+    expect(ctl.model.journal.map(entry => entry.prompt)).toEqual([7, 6, 5, 4, 3, 2, 1].map(turn => `prompt of turn ${turn}`))
+
+    ctl.openJournal()
+    await ctl.rewindHere(turnKey(ctl, 1))
+
+    const band = ctl.model.action
+
+    if (band?.kind !== 'choose') throw new Error(`band ${band?.kind}`)
+
+    expect(band.title).toBe(say('⟲ Rewind git to before turn 1 "prompt of turn 1"', '⟲ Rembobiner git avant le tour 1 « prompt of turn 1 »'))
+    expect(band.isShared).toBe(true)
+    expect(band.actions.map(action => [action.args, ...(action.then ?? [])])).toEqual([
+      [['reset', '--keep', h('3')]],
+      [['reset', '--keep', h('3')], ['stash', 'apply', S]],
+    ])
+    expect(band.actions[0]?.details).toEqual([say(
+      'origin/main moved in these turns (a push): origin keeps what was pushed; ctree never touches the remote',
+      'origin/main a bougé dans ces tours (un push) : origin garde ce qui a été poussé ; ctree ne touche jamais au distant',
+    )])
+    expect(writes).toEqual([])
+
+    // Git, and the files the reset threw away.
+    await ctl.confirm(1)
+
+    expect(writes).toEqual([['reset', '--keep', h('3')], ['stash', 'apply', S]])
+    expect(repo.refs).toEqual({ 'refs/heads/main': h('3'), 'refs/heads/feature/ui': h('1'), 'refs/remotes/origin/main': M })
+    expect(repo.head).toEqual({ branch: 'main', hash: h('3') })
+
+    const [rewind, ...rewound] = ctl.model.journal
+
+    expect(rewind).toMatchObject({ isRewind: true, rewoundTo: 1, moves: [{ ref: 'refs/heads/main', before: M, after: h('3') }] })
+    expect(rewound.every(entry => entry.rewoundBy === rewind?.id)).toBe(true)
+    // Claude reads it in English.
+    expect(notes.at(-1)).toBe(
+      '[ctree] Through the pane, the person rewound git to before turn 1 ("prompt of turn 1"): main eeeeeee → 3333333, ' +
+        'and the changed files thrown away in those turns are back. What your git commands did in those turns is undone: do not rely on it.',
+    )
+
+    // u undoes the rewind itself, and gives the turns back their entries.
+    await ctl.beginUndo()
+
+    expect(ctl.model.action).toMatchObject({ kind: 'confirm', action: { args: ['reset', '--keep', M] } })
+
+    await ctl.confirm()
+
+    expect(repo.refs['refs/heads/main']).toBe(M)
+    expect(ctl.model.journal[0]?.isUndone).toBe(true)
+    expect(ctl.model.journal.some(entry => entry.rewoundBy)).toBe(false)
+    expect(notes.at(-1)).toBe(
+      '[ctree] Through the pane, the person undid the rewind of git to before turn 1 (which had done: main eeeeeee → 3333333). Git is back to how it was before that rewind.',
+    )
+  })
+
+  inBoth('a step git refuses halfway: it stops, says what ran and what did not, and journals the part done', async say => {
+    const { ctl, repo, git, writes } = await session()
+
+    await ctl.rewindHere(turnKey(ctl, 5))
+
+    const band = ctl.model.action
+
+    expect(band?.kind === 'confirm' && [band.action.args, ...(band.action.then ?? [])]).toEqual([
+      ['update-ref', 'refs/heads/topic', C, '0'.repeat(40)],
+      ['switch', 'topic'],
+      ['update-ref', 'refs/heads/main', A, M],
+    ])
+
+    git.failOn = args => args[0] === 'switch'
+    await ctl.confirm()
+
+    expect(writes).toEqual([['update-ref', 'refs/heads/topic', C, '0'.repeat(40)], ['switch', 'topic']])
+    expect(ctl.model.action).toMatchObject({
+      kind: 'info',
+      isError: true,
+      lines: [
+        'Your local changes would be overwritten',
+        say('1 of 3 commands ran: the journal keeps what they did, u undoes it', '1 commande sur 3 lancée : le journal garde ce qu’elles ont fait, u l’annule'),
+        say('not run: git switch topic · git update-ref refs/heads/main aaaaaaa eeeeeee', 'pas lancé : git switch topic · git update-ref refs/heads/main aaaaaaa eeeeeee'),
+      ],
+    })
+    // The part that ran is an entry of its own, undoable; the turns are not marked rewound.
+    expect(ctl.model.journal[0]).toMatchObject({ isRewind: true, moves: [{ ref: 'refs/heads/topic', before: null, after: C }] })
+    expect(ctl.model.journal.some(entry => entry.rewoundBy)).toBe(false)
+    expect(repo.head.branch).toBe('main')
+  })
+
+  inBoth('a branch moved outside the journal is left as it is, and the band says so', async say => {
+    const { ctl, set } = await session()
+
+    set('refs/heads/main', h('9'))
+    await ctl.rewindHere(turnKey(ctl, 5))
+
+    const band = ctl.model.action
+
+    if (band?.kind !== 'confirm') throw new Error(`band ${band?.kind}`)
+
+    expect([band.action.args, ...(band.action.then ?? [])]).toEqual([['update-ref', 'refs/heads/topic', C, '0'.repeat(40)], ['switch', 'topic']])
+    expect(band.action.details).toContain(say('main moved outside the journal since: left as it is', 'main a bougé hors du journal depuis : laissée telle quelle'))
+  })
+
+  inBoth('local changes git would refuse to switch over: said before anything runs', async say => {
+    const { ctl, writes } = await session(args => (args.includes('--name-only') ? { exitCode: 0, stdout: 'a.txt\0' } : undefined))
+
+    await ctl.rewindHere(turnKey(ctl, 5))
+
+    expect(ctl.model.action).toMatchObject({
+      kind: 'info',
+      isError: true,
+      lines: [say('git would refuse: your changes to a.txt would be overwritten. Commit or stash them first.', 'git refuserait : tes modifications de a.txt seraient écrasées. Committe-les ou mets-les de côté d’abord.')],
+    })
+    expect(writes).toEqual([])
+  })
+
+  inBoth('after Claude Code’s /rewind went back, ctree offers to rewind git too, and runs nothing until y', async say => {
+    const { ctl, git, flush, toasts, writes } = await session()
+
+    await ctl.close()
+
+    const settle = async () => {
+      for (let i = 0; i < 500 && ctl.model.action === null; i += 1) await Promise.resolve()
+    }
+
+    // /rewind's menu opened with 7 turns: a tick reads 7, nothing yet. Then the person went back to before turn 5.
+    ctl.watchRewind(7)
+    flush()
+    await settle()
+    expect(ctl.model.action).toBeNull()
+
+    git.turn = 4
+    flush()
+    await settle()
+
+    const band = ctl.model.action
+
+    expect(band?.kind === 'confirm' && band.action.title).toBe(say(
+      '⟲ Claude Code went back to before turn 5, git did not: rewind it too?',
+      '⟲ Claude Code est revenu avant le tour 5, git non : le rembobiner aussi ?',
+    ))
+    expect(toasts).toHaveLength(1)
+    expect(ctl.isOpen).toBe(true)
+    expect(writes).toEqual([])
+  })
+
+  test('the next prompt with fewer turns before it says the conversation went back too', async () => {
+    const { ctl } = await session()
+
+    // Turn 8 begins as usual: nothing offered.
+    ctl.promptSent(7)
+    expect(ctl.model.action).toBeNull()
+
+    // Then a prompt with 5 turns before it: the conversation went back to before turn 6.
+    ctl.promptSent(5)
+
+    for (let i = 0; i < 500 && ctl.model.action === null; i += 1) await Promise.resolve()
+
+    expect(ctl.model.action?.kind).toBe('confirm')
   })
 })

@@ -77,6 +77,17 @@ function hostOf($: EngineInterface, siteId: () => string): Host {
     note: async text => {
       await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
     },
+    toast: text => {
+      $.ui.toast(text)
+    },
+    // The person's latest prompt: their newest message that is no tool's result and no note of ctree's.
+    prompt: async () => {
+      const messages = await $.session.messages()
+      const prompt = [...messages].reverse().find(message =>
+        message.role === 'user' && !message.toolResults?.length && message.text.trim() !== '' && !message.text.startsWith('[ctree]'))
+
+      return prompt?.text ?? null
+    },
     hasOwnSsh: async () => Boolean((await $.env.get('GIT_SSH_COMMAND')) || (await $.env.get('GIT_SSH'))),
     cwd: () => $.session.cwd(),
     after: (ms, fn) => $.clock.after(ms, fn),
@@ -242,6 +253,32 @@ export const register: Register = (on, options) => {
 
     return opened.isPlaced ? {} : { text: t().pane.notPlaced(opened.reason) }
   })
+
+  // Claude Code's /rewind: the hook sees its menu open, not the choice. ctree then watches the
+  // turns fall to learn where the conversation went back to, and offers to rewind git there too.
+  on('command.run', { command: 'rewind' }, async ($, e, next) => {
+    const before = await $.session.turns()
+    const result = await next(e)
+
+    ctl?.watchRewind(before)
+
+    return result
+  }).catch(($, e, next) => next(e))
+
+  // A prompt sent with fewer turns before it than seen: the conversation went back (the fallback of the above).
+  on('prompt.submit', async ($, e, next) => {
+    ctl?.promptSent(await $.session.turns())
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e)
+
+    ctl?.compacted(await $.session.turns())
+
+    return result
+  }).catch(($, e, next) => next(e))
 
   // Placed in the band (z), ctree draws above the prompt, the terminal's whole width.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

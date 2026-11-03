@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { isAllowedWrite } from '../src/git-actions'
-import { describeMoves, diffRefs, journalEntry, type RefState, undoPlan, ZERO } from '../src/journal'
+import { appended, describeMoves, diffRefs, journalEntry, type RefState, undoPlan, ZERO } from '../src/journal'
 import { messages } from '../src/i18n'
 import { h, inBoth } from './fixtures'
 
@@ -44,6 +44,15 @@ describe('the journal', () => {
     expect(entry.saved).toBe(h('5'))
     expect(undoPlan(entry, same)).toEqual({ steps: [], notes: [], restore: ['stash', 'apply', h('5')] })
   })
+})
+
+test('two entries of the same millisecond get names of their own', () => {
+  const still = state({ 'refs/heads/main': h('a') }, 'main', h('a'))
+  const moved = state({ 'refs/heads/main': h('b') }, 'main', h('b'))
+  const one = entryOf('git commit -m one', still, moved)
+  const journal = appended(appended([], one), { ...one, command: 'git commit -m two' })
+
+  expect(journal.map(entry => entry.id)).toEqual(['1000-1', '1000'])
 })
 
 describe('undoing', () => {

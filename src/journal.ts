@@ -101,9 +101,18 @@ export function promptStart(prompt: string): string {
   return line.length > 80 ? `${line.slice(0, 79)}…` : line
 }
 
-/** The journal with one more entry, newest first, kept to JOURNAL_SIZE. */
+/**
+ * The journal with one more entry, newest first, kept to JOURNAL_SIZE. An
+ * entry is named by its time: one of the same millisecond gets a suffix, so
+ * an undo or a rewind never takes one for another.
+ */
 export function appended(journal: readonly JournalEntry[], entry: JournalEntry): JournalEntry[] {
-  return [entry, ...journal].slice(0, JOURNAL_SIZE)
+  const taken = new Set(journal.map(one => one.id))
+  let id = entry.id
+
+  for (let n = 1; taken.has(id); n += 1) id = `${entry.id}-${n}`
+
+  return [{ ...entry, id }, ...journal].slice(0, JOURNAL_SIZE)
 }
 
 const isLocal = (ref: string) => ref.startsWith('refs/heads/') || ref.startsWith('refs/tags/')

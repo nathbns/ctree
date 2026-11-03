@@ -91,7 +91,7 @@ Les touches sont les mêmes dans les deux langues. Les notes que ctree laisse à
 | `t` | crée un tag annoté sur le commit sélectionné |
 | `p` | pousse la branche courante |
 | `u` | annule la dernière commande git de Claude (après confirmation) |
-| `l` | journal des commandes git de Claude ; Entrée sur une entrée l'annule |
+| `l` | journal des commandes git de Claude, par tour ; Entrée sur une commande l'annule, `r` sur un tour rembobine git avant lui |
 | `s` | vue session : ce que cette conversation a changé ; `e` y demande une description de PR |
 | `z` | pleine largeur au-dessus du prompt, ou retour au panneau (le choix est retenu) |
 | `r` | recharge le dépôt |
@@ -209,7 +209,7 @@ Laisser passer ?
 - **Pour couper le garde-fou** : l'option `guard` (`/plugin configure ctree@ctree` une fois installé ; avec `--plugin-dir`, `pluginConfigs` → `ctree@inline` → `guard: false`). Il est actif par défaut. Le garde-fou ne s'applique pas sans personne pour répondre (`claude -p`).
 - **En mode par défaut**, Claude Code peut encore demander sa propre permission après ta réponse.
 
-**Le journal (`l`).** Chaque commande git de Claude qui déplace une branche, un tag ou HEAD, ou qui jette des changements, y est inscrite : tour de conversation, commande, ce qui a bougé (`main a2e6115 → 8282214`).
+**Le journal (`l`).** Chaque commande git de Claude qui déplace une branche, un tag ou HEAD, ou qui jette des changements, y est inscrite, sous son tour de conversation et le début du prompt de ce tour : la commande, et ce qui a bougé (`main a2e6115 → 8282214`).
 
 **Annuler (`u`, ou Entrée dans le journal).** La confirmation montre les commandes exactes, puis :
 - une branche créée est supprimée, une branche supprimée est refaite, HEAD revient sur sa branche d'avant ;
@@ -220,6 +220,26 @@ Laisser passer ?
 - un push n'est jamais annulé, car il faudrait un push forcé.
 
 Claude reçoit une note : il sait que sa commande a été défaite.
+
+**Rembobiner git avant un tour (`r` dans le journal).** Le `/rewind` de Claude Code rend tes fichiers et la conversation, jamais ce que les commandes Bash ont fait à git. ctree fait cette partie. Sur un tour, `r` (ou Entrée sur son en-tête) remet git comme il était juste avant :
+
+```
+⟲ Rembobiner git avant le tour 1 « Run exactly this and nothing else: git commit --allow-…
+  git update-ref refs/heads/main bc3325e 4614d97
+  git switch main
+  git update-ref -d refs/heads/spike 51bc741
+  2 commits (51bc741 turn two · 4614d97 turn one) ne seront plus sur aucune branche
+y: rembobiner  n: annuler
+```
+
+- Chaque branche et tag local que ces tours ont déplacé revient, ceux qu'ils ont créés sont supprimés, ceux qu'ils ont supprimés sont refaits, et HEAD revient sur sa branche ou son commit.
+- Seulement avec les commandes que l'annulation utilise déjà : `update-ref` vérifié contre la valeur actuelle, `reset --keep` pour la branche courante, `switch` pour HEAD. Celle qui touche aux fichiers passe en premier : si git la refuse, rien d'autre n'est parti ; et les modifications locales qu'elle écraserait sont repérées avant de lancer quoi que ce soit.
+- Quand une commande de ces tours a jeté des fichiers modifiés, un deuxième choix les récupère aussi (la plus ancienne copie gardée par le garde-fou, `git stash apply`).
+- Une branche déplacée hors du journal depuis est laissée telle quelle, avec une note. Une branche distante n'est jamais touchée : un push dans ces tours est signalé, et le dépôt distant garde ce qu'il a reçu.
+- Si une commande échoue en route, tout s'arrête et le bandeau dit ce qui est parti et ce qui reste ; ce qui est parti est au journal, `u` l'annule.
+- Le rembobinage est lui-même au journal, et `u` l'annule. Claude reçoit une note.
+
+**Après le `/rewind` de Claude Code.** Quand la conversation revient en arrière, ctree le remarque (son compte de tours baisse) et propose, dans son panneau, de rembobiner git au même point : le bandeau montre les commandes, et rien ne part avant `y`. Ctrl+X Tab, ou un clic, donne le clavier au panneau.
 
 **La vue session (`s`).** Ce que la conversation a changé depuis son début :
 - les branches et tags créés, supprimés ou déplacés, avec `+n −m` commits ;
@@ -256,7 +276,7 @@ Mesuré sur un dépôt synthétique de 440 000 commits, 7 000 branches, branches
 Le mod lance git sans shell, en passant les arguments directement (`$.process.run`).
 
 - Les lectures passent par une liste blanche (`src/git-commands.ts`, `isReadOnly`).
-- Les écritures passent par une garde à part (`src/git-actions.ts`, `isAllowedWrite`). Elle n'admet que les formes construites par les actions et par l'annulation :
+- Les écritures passent par une garde à part (`src/git-actions.ts`, `isAllowedWrite`). Elle n'admet que les formes construites par les actions, l'annulation et le rembobinage (qui n'en ajoute aucune) :
   - `switch <branche>`, `switch --track`, `switch --detach <hash>` ;
   - `tag -a … <hash>` ;
   - `push --follow-tags [-u] <distant> <branche>` ;
@@ -275,11 +295,11 @@ src/      cœur pur, sans dépendance à Claude Code : commandes git, parsing,
           vue d'ensemble (repliement), actions (branche, tag, push) et leur garde,
           garde-fou (guard.ts), journal et annulation (journal.ts), vue session,
           recherche (search.ts), textes en anglais et en français (i18n.ts),
-          le dépôt de démonstration et sa garde (demo.ts)
+          le dépôt de démonstration et sa garde (demo.ts), le rembobinage de git avant un tour (rewind.ts)
 hooks/    le mod : register.tsx (hooks), controller.ts (état), view.tsx (rendu)
 types/    contrat $.state (l'état des refs au début de la session, pour ✦ ; le journal)
 tests/    lanes, parsing, étiquettes et couleurs, lignes, vue d'ensemble, actions, garde-fou,
-          journal, recherche, textes, démo, contrôleur, panneau monté
+          journal, rembobinage, recherche, textes, démo, contrôleur, panneau monté
 ```
 
 ## Développer
@@ -287,7 +307,7 @@ tests/    lanes, parsing, étiquettes et couleurs, lignes, vue d'ensemble, actio
 Depuis le dossier du dépôt :
 
 ```sh
-claude plugin test .         # 280 tests
+claude plugin test .         # 304 tests
 claude plugin validate .
 npx -p typescript tsc -p .   # après un premier lancement avec --plugin-dir,
                              # qui dépose les types dans .claude-plugin/types/

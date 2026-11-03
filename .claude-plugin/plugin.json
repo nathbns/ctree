@@ -1,7 +1,7 @@
 {
   "name": "ctree",
-  "version": "0.4.0",
-  "description": "The repository's git graph beside the conversation, following Claude's git commands: a guard on destructive ones, a journal that undoes them, search, compare, stashes; branch, tag and push once you confirm",
+  "version": "0.5.0",
+  "description": "The repository's git graph beside the conversation, following Claude's git commands: a guard on destructive ones, a journal that undoes them and rewinds git to before a turn, search, compare, stashes; branch, tag and push once you confirm",
   "author": {
     "name": "nathbns"
   },

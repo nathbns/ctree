@@ -10,7 +10,7 @@ import type { Commit, GitRunner, RepoSnapshot, Stash } from './types'
 
 /** A change ready to confirm: what runs, and what the pane and Claude are told. */
 export type Action = {
-  kind: 'switch' | 'tag' | 'push' | 'undo' | 'stash'
+  kind: 'switch' | 'tag' | 'push' | 'undo' | 'stash' | 'rewind'
   /** The arguments after `git`. */
   args: string[]
   /** Further commands run in order once `args` succeeded; the first failure stops them. */
@@ -25,6 +25,10 @@ export type Action = {
   note: string
   /** The journal entry it undoes. */
   undoes?: string
+  /** What a choice among several says, in place of its commands. */
+  choice?: string
+  /** A rewind of git: from which entry, to before which turn, and the entries it puts back. */
+  rewind?: { turn: number; prompt: string | null; entries: readonly string[]; withFiles: boolean }
 }
 
 export type SwitchTarget =

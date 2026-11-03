@@ -18,7 +18,8 @@ import { displayCommand, isSafeRefName } from '../src/git-actions'
 import { headRef, PAGE_SIZE, repoInfo, sshCommand } from '../src/git-commands'
 import { consequences, gitCalls, type Loss, losesChanges, lossText, readStatus, riskOf } from '../src/guard'
 import { messages, NOTES, t } from '../src/i18n'
-import { appended, describeMoves, journalEntry, type JournalEntry, readRefState, type RefState, undoPlan } from '../src/journal'
+import { appended, describeMoves, journalEntry, type JournalEntry, readRefState, type RefState, shortRef, undoPlan } from '../src/journal'
+import { groupStart, type Left, rewindConflicts, rewindLosses, rewindPlan, rewindStart, turnGroups } from '../src/rewind'
 import { loadSessionData, prDescriptionPrompt, type SessionData } from '../src/session'
 import {
   commitKey,
@@ -67,6 +68,8 @@ export type Host = {
   write: GitRunner
   /** Appends a note to the conversation that Claude reads and the person does not. */
   note: (text: string) => Promise<void>
+  /** A short message at the edge of the screen, wherever the keyboard is. */
+  toast: (text: string) => void
   /** Whether the person set an ssh command of their own in the environment. */
   hasOwnSsh: () => Promise<boolean>
   cwd: () => Promise<string>
@@ -89,6 +92,8 @@ export type Host = {
   ask: (question: string, options: readonly string[]) => Promise<string | null>
   /** The conversation's prompt count. */
   turns: () => Promise<number>
+  /** The person's latest prompt, as the transcript holds it; null when none. */
+  prompt: () => Promise<string | null>
   now: () => Promise<number>
   journal: {
     get: () => Promise<readonly JournalEntry[] | null>
@@ -152,7 +157,7 @@ export type Band =
   | { kind: 'preparing'; title: string }
   | { kind: 'confirm'; action: Action }
   /** Several branches at the commit: each choice is its own confirmation. */
-  | { kind: 'choose'; title: string; actions: Action[] }
+  | { kind: 'choose'; title: string; actions: Action[]; isShared?: true }
   | { kind: 'tag-form'; commit: Commit; name: string; message: string; error: string | null }
   | { kind: 'search-form'; query: string }
   | { kind: 'running'; action: Action }
@@ -187,6 +192,8 @@ export type Model = {
   /** The commit marked to compare another with (`m`). */
   mark: string | null
   search: ActiveSearch | null
+  /** The journal's row the ring is on (`turn-<entry>` or `journal-<entry>`): what r rewinds. */
+  journalAt: string | null
 }
 
 export const INITIAL: Model = {
@@ -207,6 +214,7 @@ export const INITIAL: Model = {
   journal: [],
   mark: null,
   search: null,
+  journalAt: null,
 }
 
 /** Rows from the window's end at which the next page starts loading. */
@@ -222,6 +230,9 @@ const REVEAL_LIMIT = 5000
 const SLOW_READ_MS = 1500
 const PUSH_TIMEOUT_MS = 120_000
 const WRITE_TIMEOUT_MS = 30_000
+/** After Claude Code's /rewind opens, the turns are read this often, this many times, to see where it went back to. */
+const REWIND_POLL_MS = 1000
+const REWIND_CHECKS = 300
 
 const shortCommand = (command: string) => (command.length > 120 ? `${command.slice(0, 119)}…` : command)
 
@@ -238,6 +249,9 @@ export function createController(host: Host) {
   let running: Promise<void> = Promise.resolve()
   let paging: Promise<void> | null = null
   let isSlowSaid = false
+  /** The most turns the conversation was seen to have: fewer later means Claude Code's /rewind went back. */
+  let seenTurns = 0
+  let rewindWatch: { cancel: () => void } | null = null
 
   const set = (patch: Partial<Model>) => {
     model = { ...model, ...patch }
@@ -700,6 +714,150 @@ export function createController(host: Host) {
     return info.code === 0 ? info.stdout.split('\n')[0]?.trim() || cwd : cwd
   }
 
+  /** The command a journal entry shows: Claude's as written, or ctree's rewind in the person's language. */
+  const commandOf = (entry: JournalEntry) => (entry.isRewind ? t().journal.rewindCommand(entry.rewoundTo ?? entry.turn) : entry.command)
+
+  /** The entry a rewind starts from for the journal row `key`: the oldest of its turn's run (the newest run when none). */
+  const startOf = (key: string | null): string | null => {
+    const groups = turnGroups(model.journal)
+    const id = key?.replace(/^(turn|journal)-/, '') ?? null
+    const group = id ? groups.find(one => one.entries.some(entry => entry.id === id)) : groups[0]
+
+    return group ? groupStart(group)?.id ?? null : null
+  }
+
+  const leftText = (left: Left): string => {
+    const said = t().rewind
+
+    switch (left.kind) {
+      case 'moved-outside':
+        return said.movedOutside(shortRef(left.ref))
+      case 'head-outside':
+        return said.headOutside
+      case 'elsewhere':
+        return said.elsewhere(shortRef(left.ref))
+      case 'current-kept':
+        return t().journal.currentKept(shortRef(left.ref))
+    }
+  }
+
+  /**
+   * A rewind that ran, whole or in part, goes in the journal as ctree's own
+   * entry, so u undoes it; once whole, the entries it put back say so.
+   */
+  const recordRewind = async (rewind: NonNullable<Action['rewind']>, before: RefState | null, isWhole: boolean): Promise<JournalEntry | null> => {
+    const after = await readRefState(host.git, await toplevelOf()).catch(() => null)
+
+    if (!before || !after) return null
+
+    const entry = journalEntry({
+      at: await host.now(),
+      turn: await host.turns().catch(() => 0),
+      command: messages('en').journal.rewindCommand(rewind.turn),
+      isSubagent: false,
+      before,
+      after,
+    })
+
+    if (!entry) return null
+
+    const [made, ...rest] = appended(model.journal, { ...entry, isRewind: true, rewoundTo: rewind.turn })
+
+    if (!made) return null
+
+    const journal = [made, ...rest.map(one => (isWhole && rewind.entries.includes(one.id) ? { ...one, rewoundBy: made.id } : one))]
+
+    model = { ...model, journal }
+    await host.journal.set(journal)
+
+    return made
+  }
+
+  /** The person asked a rewind of git to before the entry `start` (or Claude Code's /rewind went back there: `isOffered`). */
+  const beginRewind = async (start: string | null, isOffered = false) => {
+    const said = t().rewind
+
+    if (!start) return showNotice(said.noTurn, false)
+
+    const toplevel = await toplevelOf()
+    const [now, status] = await Promise.all([readRefState(host.git, toplevel), readStatus(host.git, toplevel)])
+
+    if (!now) return
+
+    const here = toplevel.replace(/\/+$/, '')
+    const elsewhere = (repoOf()?.worktrees ?? []).filter(tree => tree.branch && tree.path.replace(/\/+$/, '') !== here).map(tree => tree.branch ?? '')
+    const plan = rewindPlan(model.journal, start, now, elsewhere)
+    const first = model.journal.find(entry => entry.id === start)
+    const info = (title: string, lines: string[], isError = false) => openBand({ kind: 'info', title, lines, isError }, 'act-n')
+
+    if ('kind' in plan) {
+      return isOffered ? undefined : info(said.title(first?.turn ?? 0, first?.prompt ?? null), [plan.kind === 'incomplete' ? said.incomplete : said.nothing])
+    }
+
+    const title = isOffered ? said.offered(plan.turn) : said.title(plan.turn, plan.prompt)
+    const notes = plan.left.map(leftText)
+
+    if (plan.steps.length === 0 && !plan.restore) {
+      return isOffered ? undefined : info(title, [said.nothing, ...notes])
+    }
+
+    // git would refuse to switch or reset over these: say so before anything runs.
+    const conflicts = await rewindConflicts(host.git, toplevel, plan, status.map(entry => entry.path)).catch(() => [])
+
+    if (conflicts.length > 0) return info(title, [said.conflict(conflicts)], true)
+
+    const losses = await rewindLosses(host.git, toplevel, plan, now).catch(() => ({ orphaned: null, kept: [] }))
+    const details = [
+      ...(losses.orphaned ? [lossText({ kind: 'orphaned', commits: losses.orphaned })] : []),
+      ...losses.kept.map(kept => said.pushed(shortRef(kept.ref), shortRef(kept.ref).split('/')[0] ?? '', kept.commits ? t().loss.commits(kept.commits) : null)),
+      ...notes,
+      ...(plan.restore && plan.otherCopies > 0 ? [said.otherCopies(plan.otherCopies)] : []),
+    ]
+    const rewind = { turn: plan.turn, prompt: plan.prompt, entries: plan.entries, withFiles: false }
+    const base = { kind: 'rewind' as const, title, details, confirm: said.confirm, note: '', rewind }
+    const actions: Action[] = []
+    const [step, ...rest] = plan.steps
+
+    if (step) {
+      actions.push({ ...base, args: step, then: rest, success: said.done(plan.turn), choice: said.gitOnly })
+    }
+
+    if (plan.restore) {
+      const [head, ...tail] = [...plan.steps, plan.restore]
+
+      actions.push({
+        ...base,
+        args: head ?? plan.restore,
+        then: tail,
+        success: said.doneWithFiles(plan.turn),
+        choice: said.withFiles((plan.restore[2] ?? '').slice(0, 7)),
+        rewind: { ...rewind, withFiles: true },
+      })
+    }
+
+    const [only] = actions
+
+    if (!only) return
+
+    if (!isOpen) {
+      // Offered after Claude Code's /rewind: the pane shows the question, the person answers there.
+      isOpen = true
+      if (placement === 'pane') await host.open(false).catch(() => undefined)
+      host.toast(said.later)
+    }
+
+    openBand(actions.length === 1 ? { kind: 'confirm', action: only } : { kind: 'choose', title, actions, isShared: true }, 'act-n')
+  }
+
+  /** The conversation now has `turns` turns, fewer than seen: offer to rewind git to before the next one. */
+  const wentBack = (turns: number) => {
+    seenTurns = turns
+
+    const start = rewindStart(model.journal, turns + 1)
+
+    if (start && !model.action) void beginRewind(start, true).catch(() => undefined)
+  }
+
   /** Lets ssh fail rather than prompt, unless the person set their own ssh command. */
   const sshEnv = async (toplevel: string): Promise<Record<string, string>> => {
     if (await host.hasOwnSsh()) {
@@ -824,6 +982,12 @@ export function createController(host: Host) {
      * or keep it in place where it would wrap past an end.
      */
     ringMoved(target: string | undefined): 'stay' | 'go' {
+      // In the journal the ring says which turn r rewinds.
+      if (model.mode.kind === 'journal' && (target?.startsWith('turn-') || target?.startsWith('journal-'))) {
+        model = { ...model, journalAt: target }
+        return 'go'
+      }
+
       if (model.mode.kind !== 'list' || model.snapshot?.kind !== 'repo' || model.action) {
         return 'go'
       }
@@ -898,9 +1062,55 @@ export function createController(host: Host) {
       leave()
     },
 
-    /** l: Claude's git commands this session, each one undoable. */
+    /** l: Claude's git commands this session by turn, each one undoable, each turn rewindable. */
     openJournal() {
-      set({ mode: { kind: 'journal' }, notice: null, isEscapeKept: false })
+      set({ mode: { kind: 'journal' }, journalAt: null, notice: null, isEscapeKept: false })
+    },
+
+    commandOf,
+
+    /** r in the journal, or Enter on a turn: git rewound to before the turn of the row the ring is on, once confirmed. */
+    async rewindHere(key?: string) {
+      await beginRewind(startOf(key ?? model.journalAt))
+    },
+
+    /** Claude Code's /rewind opened (with `before` turns): for a while, watch for the turns to fall. */
+    watchRewind(before: number) {
+      rewindWatch?.cancel()
+      seenTurns = Math.max(seenTurns, before)
+
+      let checks = 0
+      const check = () => {
+        rewindWatch = host.after(REWIND_POLL_MS, () => {
+          void host.turns().then(turns => {
+            if (turns < before) {
+              rewindWatch = null
+              wentBack(turns)
+            } else if ((checks += 1) < REWIND_CHECKS) {
+              check()
+            } else {
+              rewindWatch = null
+            }
+          }).catch(() => undefined)
+        })
+      }
+
+      check()
+    },
+
+    /** A prompt goes with `turns` before it: fewer than seen means the conversation went back. */
+    promptSent(turns: number) {
+      rewindWatch?.cancel()
+      rewindWatch = null
+
+      if (turns < seenTurns) wentBack(turns)
+
+      seenTurns = turns + 1
+    },
+
+    /** The conversation was compacted: its turns are counted afresh. */
+    compacted(turns: number) {
+      seenTurns = turns
     },
 
     /** s: what this conversation changed, from where the refs stood when it started. */
@@ -1024,9 +1234,12 @@ export function createController(host: Host) {
         before,
         after,
         ...(input.saved ? { saved: input.saved } : {}),
+        prompt: await host.prompt().catch(() => null),
       })
 
       if (!entry) return
+
+      seenTurns = Math.max(seenTurns, entry.turn)
 
       const journal = appended(model.journal, entry)
 
@@ -1036,19 +1249,19 @@ export function createController(host: Host) {
 
     /** u: undo a journal entry (the latest not undone when none is named), confirmed first. */
     async beginUndo(id?: string) {
-      const entry = id ? model.journal.find(one => one.id === id) : model.journal.find(one => !one.isUndone)
-
+      const entry = id ? model.journal.find(one => one.id === id) : model.journal.find(one => !one.isUndone && !one.rewoundBy)
       const said = t().undo
 
       if (!entry) return showNotice(said.nothing, false)
       if (entry.isUndone) return showNotice(said.already, false)
+      if (entry.rewoundBy) return showNotice(said.rewound, false)
 
       const now = await readRefState(host.git, await toplevelOf())
 
       if (!now) return
 
       const plan = undoPlan(entry, now)
-      const command = shortCommand(entry.command)
+      const command = shortCommand(commandOf(entry))
       const title = said.title(command, entry.turn)
       // Claude reads what was undone in English.
       const what = describeMoves(entry, messages('en')).join(', ')
@@ -1056,8 +1269,12 @@ export function createController(host: Host) {
       const actions: Action[] = []
       const [first, ...rest] = plan.steps
 
+      // A rewind undone is told as such; one of Claude's commands as its own.
+      const noteOf = (withFiles: boolean) =>
+        entry.isRewind ? NOTES.rewindUndone(entry.rewoundTo ?? entry.turn, what) : NOTES.undone(shortCommand(entry.command), entry.turn, what, withFiles)
+
       if (first) {
-        actions.push({ ...base, args: first, then: rest, details: plan.notes, success: said.done, note: NOTES.undone(command, entry.turn, what, false) })
+        actions.push({ ...base, args: first, then: rest, details: plan.notes, success: said.done, note: noteOf(false) })
       }
 
       if (plan.restore) {
@@ -1070,7 +1287,7 @@ export function createController(host: Host) {
           then: tail,
           details: [said.filesDetail(entry.savedFiles ?? 0), ...plan.notes],
           success: said.doneWithFiles,
-          note: NOTES.undone(command, entry.turn, what, true),
+          note: noteOf(true),
         })
       }
 
@@ -1427,12 +1644,20 @@ export function createController(host: Host) {
         const env = action.kind === 'push' ? await sshEnv(toplevel) : {}
         const timeoutMs = action.kind === 'push' ? PUSH_TIMEOUT_MS : WRITE_TIMEOUT_MS
         const steps = [action.args, ...(action.then ?? [])]
+        // A rewind is journaled from where the refs stood just before it.
+        const before = action.rewind ? await readRefState(host.git, toplevel).catch(() => null) : null
 
         for (const [i, args] of steps.entries()) {
           const result = await host.write(args, { cwd: toplevel, env, timeoutMs })
 
           if (result.code !== 0) {
-            const done = i > 0 ? [t().band.stepsDone(i, steps.length, displayCommand(args))] : []
+            const said = t()
+            const done = action.rewind
+              ? [...(i > 0 ? [said.rewind.ran(i, steps.length)] : []), said.rewind.notRun(steps.slice(i).map(displayCommand))]
+              : i > 0 ? [said.band.stepsDone(i, steps.length, displayCommand(args))] : []
+
+            // What ran of a rewind stays undoable.
+            if (action.rewind && i > 0) await recordRewind(action.rewind, before, false)
 
             openBand({ kind: 'info', title: `✗ ${action.title}`, lines: [...errorLines(result), ...done], isError: true }, 'act-n')
             await refresh('all')
@@ -1441,15 +1666,33 @@ export function createController(host: Host) {
         }
 
         if (action.undoes) {
-          const journal = model.journal.map(entry => (entry.id === action.undoes ? { ...entry, isUndone: true as const } : entry))
+          const undone = model.journal.find(entry => entry.id === action.undoes)
+          // Undoing a rewind gives the entries it put back their turn again.
+          const journal = model.journal.map(entry => {
+            if (entry.id === action.undoes) return { ...entry, isUndone: true as const }
+            if (!undone?.isRewind || entry.rewoundBy !== action.undoes) return entry
+
+            const { rewoundBy: _, ...kept } = entry
+
+            return kept
+          })
 
           model = { ...model, journal }
           await host.journal.set(journal)
         }
 
+        let note = action.note
+
+        if (action.rewind) {
+          const made = await recordRewind(action.rewind, before, true)
+          const what = made ? describeMoves(made, messages('en')).join(', ') : ''
+
+          note = NOTES.rewound(action.rewind.turn, action.rewind.prompt, what || 'no ref moved', action.rewind.withFiles)
+        }
+
         closeBand()
         showNotice(action.success, false)
-        void host.note(action.note).catch(() => undefined)
+        void host.note(note).catch(() => undefined)
         await refresh('all')
       } catch (error) {
         openBand({ kind: 'info', title: `✗ ${action.title}`, lines: [messageOf(error)], isError: true }, 'act-n')
